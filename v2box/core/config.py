@@ -22,6 +22,8 @@ def build_config(outbounds: list[dict], mode: str = "auto",
         lan: 是否开启局域网代理（监听 0.0.0.0）
         port: 代理监听端口
     """
+    # 清理内部字段，不写入 sing-box 配置
+    outbounds = [{k: v for k, v in o.items() if not k.startswith("_")} for o in outbounds]
     tags = [o["tag"] for o in outbounds]
 
     # urltest 自动选择组

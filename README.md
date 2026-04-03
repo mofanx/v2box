@@ -9,7 +9,8 @@
 ## ✨ 功能特性
 
 - **多协议支持** — VLESS、VMess、Shadowsocks、Trojan、Hysteria2
-- **一键导入** — 支持单条链接、文件批量导入、订阅 URL
+- **一键导入** — 支持单条链接、文件批量导入
+- **订阅管理** — 添加/更新/删除订阅，一键拉取节点，支持 Base64 自动解码
 - **智能去重** — 基于配置内容去重，同名不同配置的节点自动区分
 - **节点测速** — TCP 握手测速 / Clash API 真实代理测速
 - **手动/自动模式** — 手动选择指定节点（支持序号），或自动切换到最快节点
@@ -31,7 +32,7 @@ bash <(curl -fsSL https://sing-box.app/deb-install.sh)
 # 或参考官方文档: https://sing-box.sagernet.org/installation/
 ```
 
-2. **Python 3.8+**
+2. **Python 3.10+**
 
 ### 安装 v2box
 
@@ -51,10 +52,10 @@ pip install -e .
 ## 🚀 快速开始
 
 ```bash
-# 1. 导入节点（三选一）
+# 1. 导入节点
 v2box add "vless://uuid@server:443?security=reality&..."    # 直接粘贴链接
 v2box add nodes.txt                                          # 从文件导入
-v2box add -u https://example.com/subscribe                   # 从订阅链接导入
+v2box sub add "我的机场" https://example.com/subscribe       # 从订阅导入
 
 # 2. 生成并应用 sing-box 配置
 v2box apply
@@ -88,12 +89,6 @@ v2box add "hy2://password@server:443#节点名"
 
 # 从文件批量导入（每行一个链接）
 v2box add nodes.txt
-
-# 从订阅 URL 导入（自动解码 base64）
-v2box add -u https://example.com/subscribe
-
-# 混合导入
-v2box add nodes.txt "vless://..." -u https://sub.example.com
 
 # 从管道导入
 cat nodes.txt | v2box add
@@ -206,6 +201,28 @@ v2box rm 2            # 按序号删除
 v2box clear           # 清空所有节点（需确认）
 ```
 
+### `v2box sub` — 订阅管理
+
+```bash
+# 添加订阅并立即拉取节点
+v2box sub add "我的机场" https://provider.example/sub/token
+
+# 查看订阅列表
+v2box sub ls
+
+# 更新所有订阅（重新拉取并替换旧节点）
+v2box sub update
+
+# 更新指定订阅
+v2box sub update "我的机场"
+
+# 删除订阅及其关联节点
+v2box sub rm "我的机场"
+v2box sub rm 1                    # 按序号删除
+```
+
+订阅支持 Base64 编码自动解码，兼容主流机场订阅格式。更新订阅时会自动替换该订阅的旧节点。
+
 ### `v2box info` — 环境信息
 
 ```bash
@@ -264,6 +281,7 @@ v2box apply && v2box restart
 | 文件 | 路径 | 说明 |
 |------|------|------|
 | 节点数据 | `~/.config/v2box/nodes.json` | 已导入的节点列表 |
+| 订阅数据 | `~/.config/v2box/subs.json` | 已添加的订阅列表 |
 | 状态信息 | `~/.config/v2box/state.json` | 模式、选中节点、端口、LAN 设置 |
 | sing-box 配置 | `/etc/sing-box/config.json` | 生成的 sing-box 配置 |
 
@@ -280,7 +298,7 @@ v2box apply && v2box restart
 pip install .
 
 # 导入节点（找机场要一个订阅链接，或者一些节点链接）
-v2box add -u https://your-subscription-url
+v2box sub add "我的机场" https://your-subscription-url
 
 # 应用配置并启动
 v2box apply
@@ -305,12 +323,8 @@ v2box auto
 ### 更新节点
 
 ```bash
-# 重新导入（自动去重）
-v2box add -u https://your-subscription-url
-
-# 清空重来
-v2box clear
-v2box add -u https://your-subscription-url
+# 更新所有订阅（自动替换旧节点）
+v2box sub update
 
 # 重新应用并重启
 v2box apply && v2box restart
@@ -346,6 +360,9 @@ v2box apply && v2box restart
 **Q: 导入重复节点会怎样？**
 > v2box 基于节点的实际配置内容去重（而非仅按名称）。配置完全相同的节点会被跳过；
 > 同名但配置不同的节点会自动加后缀区分，如 `节点名 (2)`。
+
+**Q: 订阅更新后旧节点怎么处理？**
+> `v2box sub update` 会自动删除该订阅的旧节点，然后导入新节点。手动添加的节点不受影响。
 
 ---
 

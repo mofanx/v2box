@@ -9,6 +9,7 @@ from pathlib import Path
 DATA_DIR = Path(os.environ.get("V2BOX_DATA_DIR", Path.home() / ".config" / "v2box"))
 NODES_FILE = DATA_DIR / "nodes.json"
 STATE_FILE = DATA_DIR / "state.json"
+SUBS_FILE = DATA_DIR / "subs.json"
 
 
 def _ensure_dir():
@@ -35,7 +36,7 @@ def save_nodes(nodes: list[dict]):
 
 def _node_fingerprint(node: dict) -> str:
     """根据节点的实际配置内容生成指纹（排除 tag），用于判断是否真正重复。"""
-    config = {k: v for k, v in sorted(node.items()) if k != "tag"}
+    config = {k: v for k, v in sorted(node.items()) if k not in ("tag", "_source")}
     raw = json.dumps(config, sort_keys=True, ensure_ascii=False)
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
@@ -135,6 +136,74 @@ def set_port(port: int):
     state = load_state()
     state["port"] = port
     save_state(state)
+
+
+def remove_nodes_by_source(source: str) -> int:
+    """删除指定来源的所有节点，返回删除数量。"""
+    nodes = load_nodes()
+    new_nodes = [n for n in nodes if n.get("_source") != source]
+    removed = len(nodes) - len(new_nodes)
+    if removed:
+        save_nodes(new_nodes)
+    return removed
+
+
+# ── 订阅管理 ─────────────────────────────────────────────────
+
+def load_subs() -> list[dict]:
+    """加载订阅列表。"""
+    if not SUBS_FILE.exists():
+        return []
+    try:
+        return json.loads(SUBS_FILE.read_text("utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_subs(subs: list[dict]):
+    """保存订阅列表。"""
+    _ensure_dir()
+    SUBS_FILE.write_text(json.dumps(subs, indent=2, ensure_ascii=False), "utf-8")
+
+
+def add_sub(name: str, url: str) -> bool:
+    """添加订阅，名称不能重复。返回是否成功。"""
+    from datetime import datetime
+    subs = load_subs()
+    if any(s["name"] == name for s in subs):
+        return False
+    subs.append({
+        "name": name,
+        "url": url,
+        "added_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": None,
+        "node_count": 0,
+    })
+    save_subs(subs)
+    return True
+
+
+def update_sub_meta(name: str, node_count: int):
+    """更新订阅的节点数和更新时间。"""
+    from datetime import datetime
+    subs = load_subs()
+    for s in subs:
+        if s["name"] == name:
+            s["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            s["node_count"] = node_count
+            break
+    save_subs(subs)
+
+
+def remove_sub(name: str) -> bool:
+    """删除订阅（同时删除其关联的节点）。返回是否成功。"""
+    subs = load_subs()
+    new_subs = [s for s in subs if s["name"] != name]
+    if len(new_subs) == len(subs):
+        return False
+    save_subs(new_subs)
+    remove_nodes_by_source(f"sub:{name}")
+    return True
 
 
 def get_data_dir() -> Path:

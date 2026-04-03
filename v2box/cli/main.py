@@ -22,6 +22,8 @@ from v2box.parsers import parse_link, supported_protocols
 from v2box.core.store import (
     load_nodes, add_nodes, remove_node, clear_nodes,
     load_state, set_selected_node, set_mode, set_lan, set_port,
+    load_subs, add_sub, remove_sub, update_sub_meta,
+    remove_nodes_by_source,
 )
 from v2box.core.config import (
     build_config, write_config, config_to_json, SINGBOX_CONFIG_PATH,
@@ -65,8 +67,7 @@ def cli(ctx):
 
 @cli.command("add")
 @click.argument("sources", nargs=-1)
-@click.option("-u", "--url", help="从订阅 URL 获取节点（base64 编码）")
-def cmd_add(sources, url):
+def cmd_add(sources):
     """导入代理节点。
 
     \b
@@ -76,45 +77,29 @@ def cmd_add(sources, url):
       - 多种来源可混合使用
 
     \b
+    订阅导入请使用: v2box sub add <名称> <URL>
+
+    \b
     示例:
       v2box add "vless://uuid@server:443?..."
       v2box add nodes.txt
       v2box add nodes.txt "vmess://..."
-      v2box add -u https://example.com/sub
     """
     import os
-    import base64
-    import urllib.request
 
     links = []
 
-    # 处理订阅 URL
-    if url:
-        console.print(f"[dim]正在获取订阅: {url}[/dim]")
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "v2box"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                raw = resp.read()
-            try:
-                decoded = base64.b64decode(raw).decode("utf-8")
-            except Exception:
-                decoded = raw.decode("utf-8")
-            links.extend(decoded.strip().splitlines())
-            console.print(f"[green]✓[/green] 从订阅获取到 {len(links)} 行")
-        except Exception as e:
-            console.print(f"[red]✗[/red] 获取订阅失败: {e}")
-            return
-
     # 处理参数
-    if not sources and not url:
+    if not sources:
         # 尝试从 stdin 读取
         if not sys.stdin.isatty():
             stdin_data = sys.stdin.read().strip()
             if stdin_data:
                 links.extend(stdin_data.splitlines())
         else:
-            console.print("[yellow]请提供节点链接、文件路径或订阅 URL[/yellow]")
-            console.print("用法: v2box add <链接或文件> 或 v2box add -u <订阅URL>")
+            console.print("[yellow]请提供节点链接或文件路径[/yellow]")
+            console.print("用法: v2box add <链接或文件>")
+            console.print("[dim]订阅导入请使用: v2box sub add <名称> <URL>[/dim]")
             return
 
     for source in sources:
@@ -149,7 +134,7 @@ def cmd_add(sources, url):
 
     added, skipped = add_nodes(parsed)
     console.print(
-        f"\n[bold green]完成![/bold green] 新增 {added} 个节点"
+        f"\n[bold green]完成！[/bold green] 新增 {added} 个节点"
         + (f"，跳过 {skipped} 个重复" if skipped else "")
     )
 
@@ -644,6 +629,188 @@ def cmd_port(port_num):
     console.print("[dim]提示: 运行 v2box apply && v2box restart 使配置生效[/dim]")
 
 
+# ── sub: 订阅管理 ──────────────────────────────────────────
+
+@cli.group("sub")
+def cmd_sub():
+    """订阅管理：添加、更新、查看和删除订阅。
+
+    \b
+    示例:
+      v2box sub add “我的机场” https://example.com/sub/token
+      v2box sub ls
+      v2box sub update
+      v2box sub rm “我的机场”
+    """
+    pass
+
+
+@cmd_sub.command("add")
+@click.argument("name")
+@click.argument("url")
+def cmd_sub_add(name, url):
+    """添加订阅并立即拉取节点。
+
+    \b
+    NAME  订阅名称（自定义，用于标识）
+    URL   订阅链接（支持 Base64 编码）
+
+    \b
+    示例:
+      v2box sub add “我的机场” https://provider.example/sub/token
+    """
+    from v2box.core.subscription import fetch_subscription, parse_subscription
+
+    if not add_sub(name, url):
+        console.print(f"[red]✗[/red] 订阅名称 [bold]{name}[/bold] 已存在")
+        return
+
+    console.print(f"[dim]正在获取订阅: {name}...[/dim]")
+    try:
+        content = fetch_subscription(url)
+    except Exception as e:
+        console.print(f"[red]✗[/red] 获取失败: {e}")
+        remove_sub(name)
+        return
+
+    source_tag = f"sub:{name}"
+    nodes, failed = parse_subscription(content, source=source_tag)
+
+    if not nodes:
+        console.print("[red]✗[/red] 未解析到任何有效节点")
+        remove_sub(name)
+        return
+
+    added, skipped = add_nodes(nodes)
+    update_sub_meta(name, added)
+
+    console.print(
+        f"[green]✓[/green] 订阅 [bold]{name}[/bold] 添加成功\n"
+        f"  节点: {added} 个新增"
+        + (f", {skipped} 个重复跳过" if skipped else "")
+        + (f", {failed} 个解析失败" if failed else "")
+    )
+
+
+@cmd_sub.command("update")
+@click.argument("name", required=False)
+def cmd_sub_update(name):
+    """更新订阅（重新拉取并替换节点）。
+
+    \b
+    NAME  要更新的订阅名称（省略则更新所有订阅）
+
+    \b
+    示例:
+      v2box sub update              # 更新所有订阅
+      v2box sub update “我的机场”   # 更新指定订阅
+    """
+    from v2box.core.subscription import fetch_subscription, parse_subscription
+
+    subs = load_subs()
+    if not subs:
+        console.print("[yellow]暂无订阅，请先用 v2box sub add 添加[/yellow]")
+        return
+
+    targets = subs
+    if name:
+        targets = [s for s in subs if s["name"] == name]
+        if not targets:
+            console.print(f"[red]✗[/red] 未找到订阅: {name}")
+            return
+
+    total_added = 0
+    for sub in targets:
+        sname = sub["name"]
+        console.print(f"\n[dim]正在更新: {sname}...[/dim]")
+        try:
+            content = fetch_subscription(sub["url"])
+        except Exception as e:
+            console.print(f"  [red]✗[/red] 获取失败: {e}")
+            continue
+
+        source_tag = f"sub:{sname}"
+        nodes, failed = parse_subscription(content, source=source_tag)
+
+        if not nodes:
+            console.print(f"  [yellow]⚠[/yellow] 未解析到有效节点")
+            continue
+
+        # 先删除该订阅的旧节点，再添加新节点
+        removed = remove_nodes_by_source(source_tag)
+        added, skipped = add_nodes(nodes)
+        update_sub_meta(sname, added)
+        total_added += added
+
+        console.print(
+            f"  [green]✓[/green] {sname}: {added} 个节点"
+            + (f" (替换了 {removed} 个旧节点)" if removed else "")
+            + (f", {failed} 个解析失败" if failed else "")
+        )
+
+    if total_added:
+        console.print(f"\n[bold green]完成！[/bold green] 共更新 {total_added} 个节点")
+        console.print("[dim]提示: 运行 v2box apply && v2box restart 使配置生效[/dim]")
+
+
+@cmd_sub.command("ls")
+def cmd_sub_ls():
+    """查看已添加的订阅列表。
+
+    \b
+    示例:
+      v2box sub ls
+    """
+    subs = load_subs()
+    if not subs:
+        console.print("[yellow]暂无订阅，请先用 v2box sub add 添加[/yellow]")
+        return
+
+    table = Table(title=f"订阅列表 ({len(subs)} 个)")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("名称", style="bold")
+    table.add_column("节点数", justify="right")
+    table.add_column("最后更新", style="dim")
+    table.add_column("URL", style="dim", max_width=50, overflow="ellipsis")
+
+    for i, sub in enumerate(subs, 1):
+        updated = sub.get("updated_at") or "未更新"
+        table.add_row(
+            str(i), sub["name"], str(sub.get("node_count", 0)),
+            updated, sub["url"],
+        )
+
+    console.print(table)
+
+
+@cmd_sub.command("rm")
+@click.argument("name")
+def cmd_sub_rm(name):
+    """删除订阅及其关联的所有节点。
+
+    \b
+    NAME  订阅名称或序号（v2box sub ls 中的 # 列）
+
+    \b
+    示例:
+      v2box sub rm “我的机场”
+      v2box sub rm 1
+    """
+    # 支持按序号删除
+    subs = load_subs()
+    try:
+        idx = int(name) - 1
+        if 0 <= idx < len(subs):
+            name = subs[idx]["name"]
+    except ValueError:
+        pass
+
+    if remove_sub(name):
+        console.print(f"[green]✓[/green] 已删除订阅: [bold]{name}[/bold]（关联节点已清除）")
+    else:
+        console.print(f"[red]✗[/red] 未找到订阅: {name}")
+
+
 @cli.command("info")
 def cmd_info():
     """显示 v2box 配置和环境信息。
@@ -659,6 +826,9 @@ def cmd_info():
     use_port = state.get("port", MIXED_LISTEN_PORT)
     listen_addr = "0.0.0.0" if use_lan else "127.0.0.1"
 
+    subs = load_subs()
+    nodes = load_nodes()
+
     console.print(Panel(
         f"[bold]v2box[/bold] {__version__}\n\n"
         f"[bold]数据目录:[/bold]   {get_data_dir()}\n"
@@ -666,6 +836,8 @@ def cmd_info():
         f"[bold]代理端口:[/bold]   HTTP/SOCKS5 → {listen_addr}:{use_port}\n"
         f"[bold]局域网:[/bold]     {'已开启' if use_lan else '已关闭（仅本机）'}\n"
         f"[bold]API 端口:[/bold]   Clash API   → 127.0.0.1:9090\n"
+        f"[bold]节点数:[/bold]     {len(nodes)} 个\n"
+        f"[bold]订阅数:[/bold]     {len(subs)} 个\n"
         f"[bold]支持协议:[/bold]   {', '.join(supported_protocols())}",
         title="环境信息",
     ))
