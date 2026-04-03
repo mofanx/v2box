@@ -206,6 +206,55 @@ def remove_sub(name: str) -> bool:
     return True
 
 
+# ── 服务端配置管理 ─────────────────────────────────────────────
+
+SERVERS_FILE = DATA_DIR / "servers.json"
+
+
+def load_servers() -> list[dict]:
+    """加载服务端配置列表。"""
+    if not SERVERS_FILE.exists():
+        return []
+    try:
+        return json.loads(SERVERS_FILE.read_text("utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_servers(servers: list[dict]):
+    """保存服务端配置列表。"""
+    _ensure_dir()
+    SERVERS_FILE.write_text(json.dumps(servers, indent=2, ensure_ascii=False), "utf-8")
+
+
+def add_server(data: dict) -> bool:
+    """添加服务端配置，名称不能重复。返回是否成功。"""
+    servers = load_servers()
+    if any(s["meta"]["name"] == data["meta"]["name"] for s in servers):
+        return False
+    servers.append(data)
+    save_servers(servers)
+    return True
+
+
+def remove_server(name: str) -> bool:
+    """删除服务端配置。返回是否成功。"""
+    servers = load_servers()
+    new_servers = [s for s in servers if s["meta"]["name"] != name]
+    if len(new_servers) == len(servers):
+        return False
+    save_servers(new_servers)
+    return True
+
+
+def get_server(name: str) -> dict | None:
+    """按名称获取服务端配置。"""
+    for s in load_servers():
+        if s["meta"]["name"] == name:
+            return s
+    return None
+
+
 def get_data_dir() -> Path:
     """返回数据目录路径。"""
     return DATA_DIR

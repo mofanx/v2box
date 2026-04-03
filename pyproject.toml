@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "v2box"
-version = "0.2.0"
+version = "0.3.0"
 description = "一键将代理节点链接导入 sing-box，轻松管理、测速、切换节点"
 readme = "README.md"
 license = "MIT"

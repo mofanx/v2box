@@ -1,12 +1,14 @@
 """v2box CLI — 一键将代理节点导入 sing-box，轻松管理、测速、切换节点。
 
 常用命令:
-  v2box add <链接或文件>     导入节点
-  v2box ls                  查看节点列表
-  v2box test                测速所有节点
-  v2box use <节点名>         手动选择节点
-  v2box auto                自动选择最快节点
-  v2box start / stop / restart   管理 sing-box 服务
+  v2box add <链接或文件>           导入节点
+  v2box sub add <名称> <URL>      添加订阅
+  v2box server create <方案>      创建服务端节点
+  v2box ls                        查看节点列表
+  v2box test                      测速所有节点
+  v2box use <节点名>               手动选择节点
+  v2box auto                      自动选择最快节点
+  v2box start / stop / restart    管理 sing-box 服务
 """
 
 import sys
@@ -54,6 +56,11 @@ def cli(ctx):
       3. 启动服务:  v2box start
       4. 测速:      v2box test
       5. 选节点:    v2box use <节点名>
+
+    \b
+    更多功能:
+      订阅管理:    v2box sub add/update/ls/rm
+      服务端管理:  v2box server create/ls/export/link/rm
 
     \b
     支持的协议: vless, vmess, shadowsocks, trojan, hysteria2
@@ -809,6 +816,255 @@ def cmd_sub_rm(name):
         console.print(f"[green]✓[/green] 已删除订阅: [bold]{name}[/bold]（关联节点已清除）")
     else:
         console.print(f"[red]✗[/red] 未找到订阅: {name}")
+
+
+# ── server: 服务端节点管理 ─────────────────────────────────────
+
+@cli.group("server")
+def cmd_server():
+    """服务端节点管理：创建、查看、导出和删除服务端配置。
+
+    \b
+    支持方案:
+      vless-reality   VLESS+Reality（免域名免证书，推荐）
+      vless-ws        VLESS+WebSocket（配合 nginx 反代使用）
+
+    \b
+    示例:
+      v2box server create vless-reality -n "我的VPS"
+      v2box server create vless-ws -n "WS节点" --path /secret
+      v2box server ls
+      v2box server export "我的VPS" -o config.json
+      v2box server link "我的VPS" --ip 1.2.3.4
+      v2box server rm "我的VPS"
+    """
+    pass
+
+
+@cmd_server.command("create")
+@click.argument("scheme", type=click.Choice(["vless-reality", "vless-ws"]))
+@click.option("-n", "--name", required=True, help="节点名称（用于标识）")
+@click.option("-p", "--port", type=int, default=None, help="监听端口（reality 默认 443，ws 默认 10001）")
+@click.option("--sni", default="www.microsoft.com", help="Reality SNI 伪装域名（默认 www.microsoft.com）")
+@click.option("--path", default="/vless-ws", help="WebSocket 路径（默认 /vless-ws）")
+def cmd_server_create(scheme, name, port, sni, path):
+    """创建服务端节点配置。
+
+    \b
+    SCHEME 方案类型:
+      vless-reality   VLESS+Reality，免域名免证书，直接监听端口
+      vless-ws        VLESS+WebSocket，监听本地端口，由 nginx 反代
+
+    \b
+    示例:
+      v2box server create vless-reality -n "我的VPS"
+      v2box server create vless-reality -n "日本节点" -p 8443 --sni www.apple.com
+      v2box server create vless-ws -n "WS节点" -p 10002 --path /my-ws
+    """
+    from v2box.core.server_config import create_vless_reality, create_vless_ws
+    from v2box.core.store import add_server
+
+    if scheme == "vless-reality":
+        p = port or 443
+        console.print(f"[dim]正在生成 VLESS+Reality 配置...[/dim]")
+        data = create_vless_reality(name=name, port=p, sni=sni)
+    else:
+        p = port or 10001
+        console.print(f"[dim]正在生成 VLESS+WS 配置...[/dim]")
+        data = create_vless_ws(name=name, listen_port=p, ws_path=path)
+
+    if not add_server(data):
+        console.print(f"[red]✗[/red] 名称 [bold]{name}[/bold] 已存在")
+        return
+
+    meta = data["meta"]
+    console.print(f"[green]✓[/green] 服务端配置已创建: [bold]{name}[/bold]")
+    console.print(f"  [bold]方案:[/bold]  {scheme}")
+
+    if scheme == "vless-reality":
+        console.print(f"  [bold]端口:[/bold]  {meta['port']}")
+        console.print(f"  [bold]SNI:[/bold]   {meta['sni']}")
+        console.print(f"  [bold]UUID:[/bold]  {meta['uuid']}")
+    else:
+        console.print(f"  [bold]监听:[/bold]  127.0.0.1:{meta['listen_port']}")
+        console.print(f"  [bold]路径:[/bold]  {meta['ws_path']}")
+        console.print(f"  [bold]UUID:[/bold]  {meta['uuid']}")
+
+    console.print(f"\n[dim]下一步:[/dim]")
+    console.print(f"  [dim]导出配置:  v2box server export \"{name}\" -o config.json[/dim]")
+    console.print(f"  [dim]生成链接:  v2box server link \"{name}\" --ip <服务器IP>[/dim]")
+
+    if scheme == "vless-ws" and "nginx_snippet" in data:
+        console.print(f"\n[bold yellow]nginx 配置片段:[/bold yellow]")
+        console.print(Panel(data["nginx_snippet"], title="nginx.conf", border_style="dim"))
+
+
+@cmd_server.command("ls")
+def cmd_server_ls():
+    """查看已创建的服务端配置列表。
+
+    \b
+    示例:
+      v2box server ls
+    """
+    from v2box.core.store import load_servers
+
+    servers = load_servers()
+    if not servers:
+        console.print("[yellow]暂无服务端配置，请先用 v2box server create 创建[/yellow]")
+        return
+
+    table = Table(title=f"服务端配置 ({len(servers)} 个)")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("名称", style="bold")
+    table.add_column("方案", style="cyan")
+    table.add_column("端口", justify="right")
+    table.add_column("UUID", style="dim", max_width=20, overflow="ellipsis")
+
+    for i, s in enumerate(servers, 1):
+        meta = s["meta"]
+        p = str(meta.get("port", meta.get("listen_port", "")))
+        table.add_row(str(i), meta["name"], meta["type"], p, meta["uuid"])
+
+    console.print(table)
+
+
+@cmd_server.command("export")
+@click.argument("name")
+@click.option("-o", "--output", type=click.Path(), default=None, help="输出文件路径")
+def cmd_server_export(name, output):
+    """导出服务端 sing-box 配置文件。
+
+    \b
+    NAME  配置名称或序号（v2box server ls 中的 #）
+
+    \b
+    示例:
+      v2box server export "我的VPS" -o config.json
+      v2box server export 1 -o /etc/sing-box/config.json
+      v2box server export "我的VPS"          # 输出到终端
+    """
+    from v2box.core.store import load_servers, get_server
+    from v2box.core.server_config import server_config_to_json
+
+    # 支持按序号
+    servers = load_servers()
+    try:
+        idx = int(name) - 1
+        if 0 <= idx < len(servers):
+            name = servers[idx]["meta"]["name"]
+    except ValueError:
+        pass
+
+    data = get_server(name)
+    if not data:
+        console.print(f"[red]✗[/red] 未找到配置: {name}")
+        return
+
+    json_str = server_config_to_json(data["server_config"])
+
+    if output:
+        from pathlib import Path
+        Path(output).write_text(json_str, "utf-8")
+        console.print(f"[green]✓[/green] 配置已导出: {output}")
+    else:
+        console.print(json_str)
+
+
+@cmd_server.command("link")
+@click.argument("name")
+@click.option("--ip", "server_ip", required=True, help="服务器公网 IP 地址")
+@click.option("-d", "--domain", default=None, help="域名（VLESS+WS 方案需要）")
+@click.option("--import", "do_import", is_flag=True, help="同时导入到本地节点列表")
+def cmd_server_link(name, server_ip, domain, do_import):
+    """生成客户端连接链接。
+
+    \b
+    NAME  配置名称或序号
+
+    \b
+    示例:
+      v2box server link "我的VPS" --ip 1.2.3.4
+      v2box server link "WS节点" --ip 1.2.3.4 -d example.com
+      v2box server link "我的VPS" --ip 1.2.3.4 --import
+    """
+    from v2box.core.store import load_servers, get_server
+    from v2box.core.link_builder import build_vless_link
+    import copy
+
+    # 支持按序号
+    servers = load_servers()
+    try:
+        idx = int(name) - 1
+        if 0 <= idx < len(servers):
+            name = servers[idx]["meta"]["name"]
+    except ValueError:
+        pass
+
+    data = get_server(name)
+    if not data:
+        console.print(f"[red]✗[/red] 未找到配置: {name}")
+        return
+
+    meta = data["meta"]
+    outbound = copy.deepcopy(data["client_outbound"])
+
+    # 填充实际地址
+    if meta["type"] == "vless-reality":
+        outbound["server"] = server_ip
+    elif meta["type"] == "vless-ws":
+        if not domain:
+            console.print("[red]✗[/red] VLESS+WS 方案需要指定域名: --domain / -d")
+            return
+        outbound["server"] = domain
+        outbound["server_port"] = 443
+        outbound["tls"]["server_name"] = domain
+
+    link = build_vless_link(outbound)
+    console.print(f"\n[bold green]客户端连接链接:[/bold green]")
+    console.print(f"  {link}")
+
+    if do_import:
+        from v2box.parsers import parse_link
+        node = parse_link(link)
+        if node:
+            added, skipped = add_nodes([node])
+            if added:
+                console.print(f"\n[green]✓[/green] 已导入到本地节点列表")
+            else:
+                console.print(f"\n[yellow]⚠[/yellow] 节点已存在，跳过导入")
+        else:
+            console.print(f"\n[red]✗[/red] 链接解析失败，未能导入")
+
+
+@cmd_server.command("rm")
+@click.argument("name")
+def cmd_server_rm(name):
+    """删除服务端配置。
+
+    \b
+    NAME  配置名称或序号
+
+    \b
+    示例:
+      v2box server rm "我的VPS"
+      v2box server rm 1
+    """
+    from v2box.core.store import load_servers, remove_server
+
+    # 支持按序号
+    servers = load_servers()
+    try:
+        idx = int(name) - 1
+        if 0 <= idx < len(servers):
+            name = servers[idx]["meta"]["name"]
+    except ValueError:
+        pass
+
+    if remove_server(name):
+        console.print(f"[green]✓[/green] 已删除: [bold]{name}[/bold]")
+    else:
+        console.print(f"[red]✗[/red] 未找到配置: {name}")
 
 
 @cli.command("info")

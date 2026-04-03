@@ -18,6 +18,7 @@
 - **服务管理** — 启动、停止、重启 sing-box，一条命令搞定
 - **简洁 CLI** — 命令短小好记，带中文帮助和示例
 - **TUN 模式** — 默认开启全局透明代理（可关闭）
+- **服务端管理** — 一键创建 VPS 节点配置，自动生成密钥和客户端链接
 
 ## 📦 安装
 
@@ -223,6 +224,40 @@ v2box sub rm 1                    # 按序号删除
 
 订阅支持 Base64 编码自动解码，兼容主流机场订阅格式。更新订阅时会自动替换该订阅的旧节点。
 
+### `v2box server` — 服务端管理
+
+在 VPS 上搭建自己的代理节点，一条命令搞定服务端配置 + 客户端链接。
+
+```bash
+# 创建 VLESS+Reality 节点（免域名免证书，推荐）
+v2box server create vless-reality -n "我的VPS"
+v2box server create vless-reality -n "日本节点" -p 8443 --sni www.apple.com
+
+# 创建 VLESS+WS 节点（配合 nginx 反代）
+v2box server create vless-ws -n "WS节点" --path /my-secret
+
+# 查看已创建的配置
+v2box server ls
+
+# 导出服务端 sing-box 配置
+v2box server export "我的VPS" -o config.json
+
+# 生成客户端连接链接
+v2box server link "我的VPS" --ip 1.2.3.4
+v2box server link "WS节点" --ip 1.2.3.4 -d example.com
+
+# 生成链接并直接导入本地
+v2box server link "我的VPS" --ip 1.2.3.4 --import
+
+# 删除配置
+v2box server rm "我的VPS"
+v2box server rm 1
+```
+
+支持的方案：
+- **VLESS+Reality** — 免域名免证书，自动生成 UUID、Reality 密钥对、short_id
+- **VLESS+WS** — 监听本地端口，由 nginx 反代 TLS，自动输出 nginx 配置片段
+
 ### `v2box info` — 环境信息
 
 ```bash
@@ -282,6 +317,7 @@ v2box apply && v2box restart
 |------|------|------|
 | 节点数据 | `~/.config/v2box/nodes.json` | 已导入的节点列表 |
 | 订阅数据 | `~/.config/v2box/subs.json` | 已添加的订阅列表 |
+| 服务端配置 | `~/.config/v2box/servers.json` | 已创建的服务端节点 |
 | 状态信息 | `~/.config/v2box/state.json` | 模式、选中节点、端口、LAN 设置 |
 | sing-box 配置 | `/etc/sing-box/config.json` | 生成的 sing-box 配置 |
 
@@ -330,6 +366,22 @@ v2box sub update
 v2box apply && v2box restart
 ```
 
+### 自建节点（VPS）
+
+```bash
+# 1. 创建服务端配置
+v2box server create vless-reality -n "我的VPS"
+
+# 2. 导出配置文件到 VPS
+v2box server export "我的VPS" -o config.json
+scp config.json root@1.2.3.4:/etc/sing-box/config.json
+ssh root@1.2.3.4 systemctl restart sing-box
+
+# 3. 生成客户端链接并导入本地
+v2box server link "我的VPS" --ip 1.2.3.4 --import
+v2box apply && v2box restart
+```
+
 ---
 
 ## ❓ 常见问题
@@ -363,6 +415,13 @@ v2box apply && v2box restart
 
 **Q: 订阅更新后旧节点怎么处理？**
 > `v2box sub update` 会自动删除该订阅的旧节点，然后导入新节点。手动添加的节点不受影响。
+
+**Q: 服务端创建的密钥保存在哪里？**
+> 保存在 `~/.config/v2box/servers.json`，包含 UUID、Reality 密钥对等敏感信息，请注意保护。
+
+**Q: VLESS+WS 方案需要域名吗？**
+> 服务端不需要（sing-box 不处理 TLS），但你需要一个域名配合 nginx 反代 HTTPS。
+> 生成客户端链接时需要指定域名：`v2box server link "名称" --ip <IP> -d <域名>`
 
 ---
 

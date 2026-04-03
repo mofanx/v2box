@@ -5,6 +5,7 @@ import socket
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from v2box.core.config import CLASH_API_PORT, CLASH_API_SECRET
@@ -34,14 +35,10 @@ def _api_request(path: str, method: str = "GET", data: dict | None = None,
 def test_via_clash_api(tag: str, test_url: str = "https://cp.cloudflare.com/generate_204",
                        timeout: int = 5000) -> int | None:
     """通过 Clash API 测试单个节点延迟 (ms)，失败返回 None。"""
-    result = _api_request(
-        f"/proxies/{tag}/delay",
-        method="GET",
-        data=None,
-        timeout=timeout / 1000 + 2,
-    )
-    # Clash API 用 GET /proxies/:name/delay?url=...&timeout=...
-    url = f"{CLASH_API_BASE}/proxies/{tag}/delay?url={test_url}&timeout={timeout}"
+    # Clash API: GET /proxies/:name/delay?url=...&timeout=...
+    encoded_tag = urllib.parse.quote(tag, safe="")
+    encoded_url = urllib.parse.quote(test_url, safe="")
+    url = f"{CLASH_API_BASE}/proxies/{encoded_tag}/delay?url={encoded_url}&timeout={timeout}"
     headers = {"Authorization": f"Bearer {CLASH_API_SECRET}"}
     req = urllib.request.Request(url, headers=headers)
     try:
