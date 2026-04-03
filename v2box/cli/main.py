@@ -828,11 +828,13 @@ def cmd_server():
     支持方案:
       vless-reality   VLESS+Reality（免域名免证书，推荐）
       vless-ws        VLESS+WebSocket（配合 nginx 反代使用）
+      socks           SOCKS5（适合 FRP 内网穿透场景）
 
     \b
     示例:
       v2box server create vless-reality -n "我的VPS"
       v2box server create vless-ws -n "WS节点" --path /secret
+      v2box server create socks -n "内网节点"
       v2box server ls
       v2box server export "我的VPS" -o config.json
       v2box server link "我的VPS" --ip 1.2.3.4
@@ -842,36 +844,45 @@ def cmd_server():
 
 
 @cmd_server.command("create")
-@click.argument("scheme", type=click.Choice(["vless-reality", "vless-ws"]))
+@click.argument("scheme", type=click.Choice(["vless-reality", "vless-ws", "socks"]))
 @click.option("-n", "--name", required=True, help="节点名称（用于标识）")
-@click.option("-p", "--port", type=int, default=None, help="监听端口（reality 默认 443，ws 默认 10001）")
+@click.option("-p", "--port", type=int, default=None, help="监听端口（reality 默认 443，ws 默认 10001，socks 默认 10808）")
 @click.option("--sni", default="www.microsoft.com", help="Reality SNI 伪装域名（默认 www.microsoft.com）")
 @click.option("--path", default="/vless-ws", help="WebSocket 路径（默认 /vless-ws）")
-def cmd_server_create(scheme, name, port, sni, path):
+@click.option("--user", default=None, help="SOCKS5 用户名（默认 v2box）")
+@click.option("--password", "pwd", default=None, help="SOCKS5 密码（默认随机生成）")
+def cmd_server_create(scheme, name, port, sni, path, user, pwd):
     """创建服务端节点配置。
 
     \b
     SCHEME 方案类型:
       vless-reality   VLESS+Reality，免域名免证书，直接监听端口
       vless-ws        VLESS+WebSocket，监听本地端口，由 nginx 反代
+      socks           SOCKS5，适合 FRP 内网穿透场景
 
     \b
     示例:
       v2box server create vless-reality -n "我的VPS"
       v2box server create vless-reality -n "日本节点" -p 8443 --sni www.apple.com
       v2box server create vless-ws -n "WS节点" -p 10002 --path /my-ws
+      v2box server create socks -n "内网节点"
+      v2box server create socks -n "内网节点" -p 10809 --user myuser --password mypass
     """
-    from v2box.core.server_config import create_vless_reality, create_vless_ws
+    from v2box.core.server_config import create_vless_reality, create_vless_ws, create_socks
     from v2box.core.store import add_server
 
     if scheme == "vless-reality":
         p = port or 443
         console.print(f"[dim]正在生成 VLESS+Reality 配置...[/dim]")
         data = create_vless_reality(name=name, port=p, sni=sni)
-    else:
+    elif scheme == "vless-ws":
         p = port or 10001
         console.print(f"[dim]正在生成 VLESS+WS 配置...[/dim]")
         data = create_vless_ws(name=name, listen_port=p, ws_path=path)
+    else:
+        p = port or 10808
+        console.print(f"[dim]正在生成 SOCKS5 配置...[/dim]")
+        data = create_socks(name=name, listen_port=p, username=user, password=pwd)
 
     if not add_server(data):
         console.print(f"[red]✗[/red] 名称 [bold]{name}[/bold] 已存在")
@@ -885,10 +896,14 @@ def cmd_server_create(scheme, name, port, sni, path):
         console.print(f"  [bold]端口:[/bold]  {meta['port']}")
         console.print(f"  [bold]SNI:[/bold]   {meta['sni']}")
         console.print(f"  [bold]UUID:[/bold]  {meta['uuid']}")
-    else:
+    elif scheme == "vless-ws":
         console.print(f"  [bold]监听:[/bold]  127.0.0.1:{meta['listen_port']}")
         console.print(f"  [bold]路径:[/bold]  {meta['ws_path']}")
         console.print(f"  [bold]UUID:[/bold]  {meta['uuid']}")
+    elif scheme == "socks":
+        console.print(f"  [bold]监听:[/bold]  127.0.0.1:{meta['listen_port']}")
+        console.print(f"  [bold]用户:[/bold]  {meta['username']}")
+        console.print(f"  [bold]密码:[/bold]  {meta['password']}")
 
     console.print(f"\n[dim]下一步:[/dim]")
     console.print(f"  [dim]导出配置:  v2box server export \"{name}\" -o config.json[/dim]")
@@ -897,6 +912,10 @@ def cmd_server_create(scheme, name, port, sni, path):
     if scheme == "vless-ws" and "nginx_snippet" in data:
         console.print(f"\n[bold yellow]nginx 配置片段:[/bold yellow]")
         console.print(Panel(data["nginx_snippet"], title="nginx.conf", border_style="dim"))
+
+    if scheme == "socks" and "frp_snippet" in data:
+        console.print(f"\n[bold yellow]FRP 客户端配置片段:[/bold yellow]")
+        console.print(Panel(data["frp_snippet"], title="frpc.toml", border_style="dim"))
 
 
 @cmd_server.command("ls")
@@ -919,12 +938,13 @@ def cmd_server_ls():
     table.add_column("名称", style="bold")
     table.add_column("方案", style="cyan")
     table.add_column("端口", justify="right")
-    table.add_column("UUID", style="dim", max_width=20, overflow="ellipsis")
+    table.add_column("标识", style="dim", max_width=24, overflow="ellipsis")
 
     for i, s in enumerate(servers, 1):
         meta = s["meta"]
         p = str(meta.get("port", meta.get("listen_port", "")))
-        table.add_row(str(i), meta["name"], meta["type"], p, meta["uuid"])
+        identity = meta.get("uuid", meta.get("username", ""))
+        table.add_row(str(i), meta["name"], meta["type"], p, identity)
 
     console.print(table)
 
@@ -973,10 +993,11 @@ def cmd_server_export(name, output):
 
 @cmd_server.command("link")
 @click.argument("name")
-@click.option("--ip", "server_ip", required=True, help="服务器公网 IP 地址")
+@click.option("--ip", "server_ip", required=True, help="服务器公网 IP 地址（或 FRP 服务器地址）")
+@click.option("-p", "--port", "remote_port", type=int, default=None, help="远端端口（SOCKS+FRP 穿透后的端口）")
 @click.option("-d", "--domain", default=None, help="域名（VLESS+WS 方案需要）")
 @click.option("--import", "do_import", is_flag=True, help="同时导入到本地节点列表")
-def cmd_server_link(name, server_ip, domain, do_import):
+def cmd_server_link(name, server_ip, remote_port, domain, do_import):
     """生成客户端连接链接。
 
     \b
@@ -986,10 +1007,11 @@ def cmd_server_link(name, server_ip, domain, do_import):
     示例:
       v2box server link "我的VPS" --ip 1.2.3.4
       v2box server link "WS节点" --ip 1.2.3.4 -d example.com
+      v2box server link "内网节点" --ip frp.example.com -p 16808
       v2box server link "我的VPS" --ip 1.2.3.4 --import
     """
     from v2box.core.store import load_servers, get_server
-    from v2box.core.link_builder import build_vless_link
+    from v2box.core.link_builder import build_vless_link, build_socks_link
     import copy
 
     # 支持按序号
@@ -1019,8 +1041,20 @@ def cmd_server_link(name, server_ip, domain, do_import):
         outbound["server"] = domain
         outbound["server_port"] = 443
         outbound["tls"]["server_name"] = domain
+    elif meta["type"] == "socks":
+        outbound["server"] = server_ip
+        if remote_port:
+            outbound["server_port"] = remote_port
+        else:
+            console.print("[red]✗[/red] SOCKS 方案需要指定远端端口（FRP 穿透端口）: --port / -p")
+            return
 
-    link = build_vless_link(outbound)
+    # 根据类型选择链接生成器
+    if meta["type"] == "socks":
+        link = build_socks_link(outbound)
+    else:
+        link = build_vless_link(outbound)
+
     console.print(f"\n[bold green]客户端连接链接:[/bold green]")
     console.print(f"  {link}")
 

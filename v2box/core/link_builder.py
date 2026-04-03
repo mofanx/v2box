@@ -1,5 +1,6 @@
 """客户端连接链接生成器 — 从 outbound 字典生成分享链接。"""
 
+import base64
 from urllib.parse import quote, urlencode
 
 
@@ -63,3 +64,25 @@ def build_vless_link(outbound: dict) -> str:
     query = urlencode(params, safe="/:@")
 
     return f"vless://{uuid}@{server}:{port}?{query}#{fragment}"
+
+
+def build_socks_link(outbound: dict) -> str:
+    """从 SOCKS outbound 字典生成 socks:// 链接。
+
+    格式: socks://base64(user:pass)@host:port#tag
+    """
+    server = outbound["server"]
+    port = outbound["server_port"]
+    tag = outbound.get("tag", "socks")
+
+    username = outbound.get("username", "")
+    password = outbound.get("password", "")
+
+    fragment = quote(str(tag), safe="")
+
+    if username:
+        cred = f"{username}:{password}"
+        encoded = base64.urlsafe_b64encode(cred.encode("utf-8")).decode("ascii").rstrip("=")
+        return f"socks://{encoded}@{server}:{port}#{fragment}"
+    else:
+        return f"socks://{server}:{port}#{fragment}"

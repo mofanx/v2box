@@ -1,10 +1,11 @@
-"""协议链接解析模块，支持 vless / vmess / ss / trojan / hysteria2"""
+"""协议链接解析模块，支持 vless / vmess / ss / trojan / hysteria2 / socks"""
 
 from v2box.parsers.vless import parse_vless
 from v2box.parsers.vmess import parse_vmess
 from v2box.parsers.shadowsocks import parse_ss
 from v2box.parsers.trojan import parse_trojan
 from v2box.parsers.hysteria2 import parse_hysteria2
+from v2box.parsers.socks import parse_socks
 
 # 协议前缀 -> 解析函数 的映射
 PARSERS = {
@@ -14,6 +15,8 @@ PARSERS = {
     "trojan://": parse_trojan,
     "hysteria2://": parse_hysteria2,
     "hy2://": parse_hysteria2,
+    "socks://": parse_socks,
+    "socks5://": parse_socks,
 }
 
 
@@ -31,4 +34,4 @@ def parse_link(link: str) -> dict | None:
 
 def supported_protocols() -> list[str]:
     """返回支持的协议列表。"""
-    return ["vless", "vmess", "ss (Shadowsocks)", "trojan", "hysteria2 / hy2"]
+    return ["vless", "vmess", "ss (Shadowsocks)", "trojan", "hysteria2 / hy2", "socks / socks5"]

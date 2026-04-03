@@ -8,7 +8,7 @@
 
 ## ✨ 功能特性
 
-- **多协议支持** — VLESS、VMess、Shadowsocks、Trojan、Hysteria2
+- **多协议支持** — VLESS、VMess、Shadowsocks、Trojan、Hysteria2、SOCKS5
 - **一键导入** — 支持单条链接、文件批量导入
 - **订阅管理** — 添加/更新/删除订阅，一键拉取节点，支持 Base64 自动解码
 - **智能去重** — 基于配置内容去重，同名不同配置的节点自动区分
@@ -18,7 +18,7 @@
 - **服务管理** — 启动、停止、重启 sing-box，一条命令搞定
 - **简洁 CLI** — 命令短小好记，带中文帮助和示例
 - **TUN 模式** — 默认开启全局透明代理（可关闭）
-- **服务端管理** — 一键创建 VPS 节点配置，自动生成密钥和客户端链接
+- **服务端管理** — 一键创建 VPS 节点配置，自动生成密钥和客户端链接，支持 SOCKS5+FRP 内网穿透
 
 ## 📦 安装
 
@@ -236,6 +236,10 @@ v2box server create vless-reality -n "日本节点" -p 8443 --sni www.apple.com
 # 创建 VLESS+WS 节点（配合 nginx 反代）
 v2box server create vless-ws -n "WS节点" --path /my-secret
 
+# 创建 SOCKS5 节点（配合 FRP 内网穿透）
+v2box server create socks -n "内网节点"
+v2box server create socks -n "内网节点" -p 10809 --user myuser --password mypass
+
 # 查看已创建的配置
 v2box server ls
 
@@ -249,6 +253,9 @@ v2box server link "WS节点" --ip 1.2.3.4 -d example.com
 # 生成链接并直接导入本地
 v2box server link "我的VPS" --ip 1.2.3.4 --import
 
+# 生成 SOCKS 链接（需指定 FRP 穿透后的远端端口）
+v2box server link "内网节点" --ip frp.example.com -p 16808
+
 # 删除配置
 v2box server rm "我的VPS"
 v2box server rm 1
@@ -257,6 +264,7 @@ v2box server rm 1
 支持的方案：
 - **VLESS+Reality** — 免域名免证书，自动生成 UUID、Reality 密钥对、short_id
 - **VLESS+WS** — 监听本地端口，由 nginx 反代 TLS，自动输出 nginx 配置片段
+- **SOCKS5** — 适合无公网 IP 的服务器，配合 FRP 内网穿透，自动输出 FRP 配置片段
 
 ### `v2box info` — 环境信息
 
@@ -382,6 +390,22 @@ v2box server link "我的VPS" --ip 1.2.3.4 --import
 v2box apply && v2box restart
 ```
 
+### FRP 内网穿透（无公网 IP 服务器）
+
+```bash
+# 1. 创建 SOCKS5 配置（自动生成用户名密码 + FRP 配置片段）
+v2box server create socks -n "内网节点"
+
+# 2. 导出配置到容器服务器
+v2box server export "内网节点" -o config.json
+# 复制到容器并启动 sing-box
+
+# 3. 在容器中配置 FRP 客户端（照着输出的 frpc.toml 片段配置）
+# 4. 生成客户端链接并导入
+v2box server link "内网节点" --ip frp.example.com -p 16808 --import
+v2box apply && v2box restart
+```
+
 ---
 
 ## ❓ 常见问题
@@ -422,6 +446,13 @@ v2box apply && v2box restart
 **Q: VLESS+WS 方案需要域名吗？**
 > 服务端不需要（sing-box 不处理 TLS），但你需要一个域名配合 nginx 反代 HTTPS。
 > 生成客户端链接时需要指定域名：`v2box server link "名称" --ip <IP> -d <域名>`
+
+**Q: SOCKS5 方案安全吗？**
+> SOCKS5 协议本身不加密，但通过 FRP 隧道传输时可以启用 FRP 的 TLS 加密（在 frpc.toml 中配置 `transport.tls`）。
+> 另外建议始终开启用户名密码认证（默认已开启）。
+
+**Q: 如何导入 socks:// 链接？**
+> 直接用 `v2box add "socks://..."` 导入，支持 `socks://` 和 `socks5://` 两种前缀。
 
 ---
 

@@ -218,6 +218,87 @@ location {ws_path} {{
     }
 
 
+def _generate_password(length: int = 16) -> str:
+    """生成随机密码。"""
+    import string
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def create_socks(
+    name: str,
+    listen_port: int = 10808,
+    username: str | None = None,
+    password: str | None = None,
+) -> dict:
+    """创建 SOCKS5 服务端配置（适合 FRP 内网穿透场景）。
+
+    Returns:
+        包含 server_config, client_outbound, meta, frp_snippet 的字典
+    """
+    if not username:
+        username = "v2box"
+    if not password:
+        password = _generate_password()
+
+    server_config = {
+        "log": {"level": "info"},
+        "inbounds": [
+            {
+                "type": "socks",
+                "tag": "socks-in",
+                "listen": "127.0.0.1",
+                "listen_port": listen_port,
+                "users": [
+                    {
+                        "username": username,
+                        "password": password,
+                    }
+                ],
+            }
+        ],
+        "outbounds": [{"type": "direct", "tag": "direct"}],
+    }
+
+    # 客户端 outbound 模板
+    client_outbound = {
+        "type": "socks",
+        "tag": name,
+        "server": "{server_ip}",
+        "server_port": "{frp_remote_port}",
+        "version": "5",
+        "username": username,
+        "password": password,
+    }
+
+    # FRP 配置片段（TOML 格式，frpc.toml）
+    frp_snippet = f"""\
+# FRP 客户端配置片段（添加到 frpc.toml）
+# 将容器内的 SOCKS5 端口穿透到 FRP 服务器
+
+[[proxies]]
+name = "{name}"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = {listen_port}
+remotePort = 0    # 设为 0 由服务端自动分配，或指定固定端口如 16808"""
+
+    meta = {
+        "name": name,
+        "type": "socks",
+        "listen_port": listen_port,
+        "username": username,
+        "password": password,
+    }
+
+    return {
+        "server_config": server_config,
+        "client_outbound": client_outbound,
+        "meta": meta,
+        "frp_snippet": frp_snippet,
+    }
+
+
 def server_config_to_json(config: dict) -> str:
     """将服务端配置转为格式化 JSON。"""
     return json.dumps(config, indent=2, ensure_ascii=False)
