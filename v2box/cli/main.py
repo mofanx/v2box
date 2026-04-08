@@ -551,10 +551,13 @@ def cmd_status():
     if use_lan:
         console.print("[green]✓[/green] 局域网代理已开启")
 
-    # Clash API
-    from v2box.core.testing import is_clash_api_available
+    # Clash API + 实时节点查询
+    from v2box.core.testing import is_clash_api_available, get_current_node_via_api
     if is_clash_api_available():
         console.print("[green]✓[/green] Clash API 可用 (127.0.0.1:9090)")
+        current = get_current_node_via_api()
+        if current:
+            console.print(f"[bold green]当前连接:[/bold green] {current['now']}")
     elif is_active:
         console.print("[yellow]⚠[/yellow] Clash API 不可用")
 

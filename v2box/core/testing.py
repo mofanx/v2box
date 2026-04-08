@@ -129,3 +129,28 @@ def is_clash_api_available() -> bool:
     """检查 Clash API 是否可用。"""
     result = _api_request("/version", timeout=2)
     return result is not None
+
+
+def get_current_node_via_api() -> dict | None:
+    """通过 Clash API 查询当前生效的节点信息。
+
+    会自动解析嵌套选择器（proxy -> auto -> 实际节点）。
+
+    Returns:
+        {"now": "实际节点名", "mode": "auto 或 manual"}
+        失败返回 None
+    """
+    result = _api_request("/proxies/proxy", timeout=3)
+    if not result or "now" not in result:
+        return None
+
+    selected = result["now"]
+
+    # 若 proxy 选择器指向 auto（urltest 组），再查一层获取实际节点
+    if selected == "auto":
+        auto_result = _api_request("/proxies/auto", timeout=3)
+        if auto_result and "now" in auto_result:
+            return {"now": auto_result["now"], "mode": "auto"}
+        return {"now": "auto (未知)", "mode": "auto"}
+
+    return {"now": selected, "mode": "manual"}
