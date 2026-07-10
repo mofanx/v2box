@@ -12,7 +12,8 @@ CLASH_API_SECRET = "v2box"
 
 def build_config(outbounds: list[dict], mode: str = "auto",
                  selected: str | None = None, lan: bool = False,
-                 port: int = MIXED_LISTEN_PORT) -> dict:
+                 port: int = MIXED_LISTEN_PORT,
+                 download_detour: str | None = None) -> dict:
     """根据节点列表生成完整 sing-box 配置。
 
     Args:
@@ -25,6 +26,15 @@ def build_config(outbounds: list[dict], mode: str = "auto",
     # 清理内部字段，不写入 sing-box 配置
     outbounds = [{k: v for k, v in o.items() if not k.startswith("_")} for o in outbounds]
     tags = [o["tag"] for o in outbounds]
+
+    # 规则集下载路径：默认 direct 避免启动时依赖 proxy 造成循环依赖；
+    # 手动模式下优先用用户选中的节点，确保能穿过 GFW 拉取规则集。
+    if download_detour:
+        detour = download_detour
+    elif mode == "manual" and selected and selected in tags:
+        detour = selected
+    else:
+        detour = "direct"
 
     # urltest 自动选择组
     urltest_group = {
@@ -115,23 +125,26 @@ def build_config(outbounds: list[dict], mode: str = "auto",
                     "type": "remote",
                     "format": "binary",
                     "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-                    "download_detour": "proxy",
+                    "download_detour": detour,
                 },
                 {
                     "tag": "geosite-cn",
                     "type": "remote",
                     "format": "binary",
                     "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                    "download_detour": "proxy",
+                    "download_detour": detour,
                 },
             ],
             "final": "proxy",
         },
         "experimental": {
+            "cache_file": {
+                "enabled": True,
+            },
             "clash_api": {
                 "external_controller": f"127.0.0.1:{CLASH_API_PORT}",
                 "secret": CLASH_API_SECRET,
-            }
+            },
         },
     }
     return config

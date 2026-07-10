@@ -50,9 +50,20 @@ def check_config(config_path: str = "/etc/sing-box/config.json") -> tuple[bool, 
 def start() -> tuple[bool, str]:
     """启动 sing-box 服务。"""
     result = _run(["sudo", "systemctl", "start", "sing-box"])
-    if result.returncode == 0:
-        return True, "sing-box 已启动"
-    return False, result.stderr.strip()
+    if result.returncode != 0:
+        return False, result.stderr.strip()
+
+    # 启动命令返回 0 不代表服务真的在运行，systemd 启动后进程可能立即失败
+    import time
+    for _ in range(5):
+        time.sleep(0.5)
+        is_active, detail = status()
+        if is_active:
+            return True, "sing-box 已启动"
+
+    # 提取失败原因
+    detail = _run(["systemctl", "status", "sing-box", "--no-pager", "-l"]).stdout.strip()
+    return False, f"服务启动后未能保持运行，请检查日志:\n{detail}"
 
 
 def stop() -> tuple[bool, str]:
@@ -66,9 +77,18 @@ def stop() -> tuple[bool, str]:
 def restart() -> tuple[bool, str]:
     """重启 sing-box 服务。"""
     result = _run(["sudo", "systemctl", "restart", "sing-box"])
-    if result.returncode == 0:
-        return True, "sing-box 已重启"
-    return False, result.stderr.strip()
+    if result.returncode != 0:
+        return False, result.stderr.strip()
+
+    import time
+    for _ in range(5):
+        time.sleep(0.5)
+        is_active, detail = status()
+        if is_active:
+            return True, "sing-box 已重启"
+
+    detail = _run(["systemctl", "status", "sing-box", "--no-pager", "-l"]).stdout.strip()
+    return False, f"服务重启后未能保持运行，请检查日志:\n{detail}"
 
 
 def status() -> tuple[bool, str]:

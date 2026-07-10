@@ -149,6 +149,9 @@ v2box apply --no-tun         # 不使用 TUN 模式（仅 HTTP/SOCKS 代理）
 v2box apply --lan            # 开启局域网代理
 v2box apply --lan -p 7890    # 局域网代理 + 自定义端口
 v2box apply --no-lan         # 关闭局域网代理
+
+# 指定规则集下载出站（默认 direct，手动模式下使用选中节点）
+v2box apply --download-detour "节点名"
 ```
 
 ### `v2box start / stop / restart` — 服务管理
@@ -453,6 +456,16 @@ v2box apply && v2box restart
 
 **Q: 如何导入 socks:// 链接？**
 > 直接用 `v2box add "socks://..."` 导入，支持 `socks://` 和 `socks5://` 两种前缀。
+
+**Q: 为什么 `v2box start` 显示成功，但 `v2box status` 提示服务未运行 / Clash API 不可用？**
+> 常见于 sing-box 1.8+ 版本。启动时 sing-box 必须下载 `geoip-cn` / `geosite-cn` 规则集，但旧版 v2box 把 `download_detour` 设为 `proxy`，导致启动时就要依赖代理下载，而代理本身又依赖规则集，形成循环（鸡生蛋）。
+>
+> v2box 现在默认使用 `direct` 下载规则集（手动模式下使用你选中的节点），并启用 `experimental.cache_file` 缓存已下载规则。若你的网络环境 `direct` 无法访问 GitHub raw，可以指定一个能访问的节点：
+> ```bash
+> v2box apply --download-detour "节点名"
+> v2box restart
+> ```
+> 同时 `v2box start` 现在会真正检测服务是否保持运行，失败时直接打印 `systemctl status` 日志，方便定位问题。
 
 ---
 

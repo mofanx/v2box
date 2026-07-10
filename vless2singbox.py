@@ -195,23 +195,26 @@ def build_full_config(outbounds: list) -> dict:
                     "type": "remote",
                     "format": "binary",
                     "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-                    "download_detour": "proxy",
+                    "download_detour": "direct",
                 },
                 {
                     "tag": "geosite-cn",
                     "type": "remote",
                     "format": "binary",
                     "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                    "download_detour": "proxy",
+                    "download_detour": "direct",
                 },
             ],
             "final": "proxy",
         },
         "experimental": {
+            "cache_file": {
+                "enabled": True,
+            },
             "clash_api": {
                 "external_controller": "127.0.0.1:9090",
                 "secret": "singbox",
-            }
+            },
         },
     }
     return config

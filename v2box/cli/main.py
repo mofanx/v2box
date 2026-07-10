@@ -397,7 +397,8 @@ def cmd_auto():
 @click.option("--lan", is_flag=True, default=None, help="开启局域网代理（监听 0.0.0.0）")
 @click.option("--no-lan", is_flag=True, default=None, help="关闭局域网代理（仅本机）")
 @click.option("-p", "--port", "listen_port", type=int, default=None, help="代理监听端口")
-def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port):
+@click.option("--download-detour", "download_detour", default=None, help="规则集下载出站，如 direct 或节点名（默认 auto/direct）")
+def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour):
     """根据已导入的节点生成并应用 sing-box 配置。
 
     \b
@@ -429,7 +430,8 @@ def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port):
     use_port = listen_port or state.get("port", MIXED_LISTEN_PORT)
 
     config = build_config(nodes, mode=mode, selected=selected,
-                          lan=use_lan, port=use_port)
+                          lan=use_lan, port=use_port,
+                          download_detour=download_detour)
 
     # 移除 TUN
     if no_tun:
