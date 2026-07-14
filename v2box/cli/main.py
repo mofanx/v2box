@@ -28,6 +28,7 @@ from v2box.core.store import (
     remove_nodes_by_source,
 )
 from v2box.core.config import (
+    apply_config,
     build_config, write_config, config_to_json, SINGBOX_CONFIG_PATH,
     MIXED_LISTEN_PORT,
 )
@@ -429,7 +430,7 @@ def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour
         use_lan = False
     use_port = listen_port or state.get("port", MIXED_LISTEN_PORT)
 
-    config = build_config(nodes, mode=mode, selected=selected,
+    config = apply_config(nodes, mode=mode, selected=selected,
                           lan=use_lan, port=use_port,
                           download_detour=download_detour)
 
@@ -1136,6 +1137,81 @@ def cmd_info():
         f"[bold]支持协议:[/bold]   {', '.join(supported_protocols())}",
         title="环境信息",
     ))
+
+
+@cli.group()
+def config():
+    """管理用户自定义配置。
+
+    \b
+    用户配置允许自定义路由规则、DNS 等设置，而节点配置由 v2box 自动管理。
+
+    \b
+    示例:
+      v2box config show     # 查看当前用户配置
+      v2box config edit     # 编辑用户配置
+      v2box config reset    # 重置为默认配置
+    """
+    pass
+
+
+@config.command("show")
+def show():
+    """显示当前用户配置。
+
+    \b
+    示例:
+      v2box config show
+    """
+    from v2box.core.config import load_user_config, USER_CONFIG_PATH
+
+    user_config = load_user_config()
+    if user_config is None:
+        console.print(f"[yellow]用户配置不存在: {USER_CONFIG_PATH}[/yellow]")
+        console.print("[dim]首次运行 v2box apply 时会自动生成默认配置[/dim]")
+        return
+
+    console.print(config_to_json(user_config))
+
+
+@config.command("edit")
+def edit():
+    """编辑用户配置。
+
+    \b
+    示例:
+      v2box config edit
+    """
+    from v2box.core.config import load_user_config, USER_CONFIG_PATH, save_user_config
+    import subprocess
+
+    user_config = load_user_config()
+    if user_config is None:
+        console.print(f"[yellow]用户配置不存在，先运行 v2box apply 生成默认配置[/yellow]")
+        return
+
+    # 使用系统默认编辑器
+    editor = os.environ.get("EDITOR", "vim")
+    subprocess.run([editor, str(USER_CONFIG_PATH)])
+    console.print(f"[green]✓[/green] 配置已编辑: {USER_CONFIG_PATH}")
+    console.print("[dim]提示: 运行 v2box apply 使配置生效[/dim]")
+
+
+@config.command("reset")
+@click.confirmation_option(prompt="确定要重置用户配置为默认吗？")
+def reset():
+    """重置用户配置为默认配置。
+
+    \b
+    示例:
+      v2box config reset
+    """
+    from v2box.core.config import reset_user_config, USER_CONFIG_PATH
+
+    reset_user_config()
+    console.print(f"[green]✓[/green] 用户配置已删除: {USER_CONFIG_PATH}")
+    console.print("[dim]提示: 运行 v2box apply 会重新生成默认配置[/dim]")
+
 
 
 if __name__ == "__main__":
