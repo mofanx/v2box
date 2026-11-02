@@ -1,13 +1,28 @@
-"""sing-box 系统服务管理 — 启动、停止、重启、查看状态。"""
+"""sing-box 服务管理 — 启动、停止、重启、查看状态。
+
+所有服务生命周期操作委托给平台后端（见 backend.py），
+本模块保留原有函数签名以兼容调用方。
+"""
 
 import shutil
 import subprocess
-import sys
+
+from v2box.core.backend import ServiceBackend, get_backend
+
+_backend: ServiceBackend | None = None
 
 
-def _run(cmd: list[str], check: bool = False) -> subprocess.CompletedProcess:
-    """运行系统命令。"""
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+def backend() -> ServiceBackend:
+    """获取当前平台的服务后端（惰性初始化）。"""
+    global _backend
+    if _backend is None:
+        _backend = get_backend()
+    return _backend
+
+
+def backend_name() -> str:
+    """当前服务后端名称（systemd / launchd / windows-service / unsupported）。"""
+    return backend().name
 
 
 def singbox_binary() -> str | None:
@@ -26,7 +41,7 @@ def get_version() -> str | None:
     if not binary:
         return None
     try:
-        result = _run([binary, "version"])
+        result = subprocess.run([binary, "version"], capture_output=True, text=True)
         if result.returncode == 0:
             # 第一行通常是 "sing-box version 1.x.x"
             first_line = result.stdout.strip().split("\n")[0]
@@ -41,7 +56,8 @@ def check_config(config_path: str = "/etc/sing-box/config.json") -> tuple[bool, 
     binary = singbox_binary()
     if not binary:
         return False, "sing-box 未安装"
-    result = _run([binary, "check", "-c", config_path])
+    result = subprocess.run(
+        [binary, "check", "-c", config_path], capture_output=True, text=True)
     if result.returncode == 0:
         return True, "配置文件格式正确"
     return False, result.stderr.strip() or result.stdout.strip()
@@ -49,69 +65,46 @@ def check_config(config_path: str = "/etc/sing-box/config.json") -> tuple[bool, 
 
 def start() -> tuple[bool, str]:
     """启动 sing-box 服务。"""
-    result = _run(["sudo", "systemctl", "start", "sing-box"])
-    if result.returncode != 0:
-        return False, result.stderr.strip()
-
-    # 启动命令返回 0 不代表服务真的在运行，systemd 启动后进程可能立即失败
-    import time
-    for _ in range(5):
-        time.sleep(0.5)
-        is_active, detail = status()
-        if is_active:
-            return True, "sing-box 已启动"
-
-    # 提取失败原因
-    detail = _run(["systemctl", "status", "sing-box", "--no-pager", "-l"]).stdout.strip()
-    return False, f"服务启动后未能保持运行，请检查日志:\n{detail}"
+    return backend().start()
 
 
 def stop() -> tuple[bool, str]:
     """停止 sing-box 服务。"""
-    result = _run(["sudo", "systemctl", "stop", "sing-box"])
-    if result.returncode == 0:
-        return True, "sing-box 已停止"
-    return False, result.stderr.strip()
+    return backend().stop()
 
 
 def restart() -> tuple[bool, str]:
     """重启 sing-box 服务。"""
-    result = _run(["sudo", "systemctl", "restart", "sing-box"])
-    if result.returncode != 0:
-        return False, result.stderr.strip()
+    return backend().restart()
 
-    import time
-    for _ in range(5):
-        time.sleep(0.5)
-        is_active, detail = status()
-        if is_active:
-            return True, "sing-box 已重启"
 
-    detail = _run(["systemctl", "status", "sing-box", "--no-pager", "-l"]).stdout.strip()
-    return False, f"服务重启后未能保持运行，请检查日志:\n{detail}"
+def reload() -> tuple[bool, str]:
+    """热加载 sing-box（SIGHUP，重建 inbound/TUN，比重启更轻）。
+
+    不支持热加载的后端返回 (False, 原因)，调用方应回退到 restart。
+    """
+    return backend().reload()
+
+
+def supports_reload() -> bool:
+    return backend().supports_reload()
 
 
 def status() -> tuple[bool, str]:
     """获取 sing-box 服务状态。"""
-    result = _run(["systemctl", "is-active", "sing-box"])
-    is_active = result.stdout.strip() == "active"
+    return backend().status()
 
-    # 获取更详细的状态
-    detail = _run(["systemctl", "status", "sing-box", "--no-pager", "-l"])
-    return is_active, detail.stdout.strip() or detail.stderr.strip()
+
+def is_active() -> bool:
+    """sing-box 服务是否运行中。"""
+    return backend().status()[0]
 
 
 def enable() -> tuple[bool, str]:
     """设置 sing-box 开机自启。"""
-    result = _run(["sudo", "systemctl", "enable", "sing-box"])
-    if result.returncode == 0:
-        return True, "sing-box 已设置开机自启"
-    return False, result.stderr.strip()
+    return backend().enable()
 
 
 def disable() -> tuple[bool, str]:
     """取消 sing-box 开机自启。"""
-    result = _run(["sudo", "systemctl", "disable", "sing-box"])
-    if result.returncode == 0:
-        return True, "sing-box 已取消开机自启"
-    return False, result.stderr.strip()
+    return backend().disable()
