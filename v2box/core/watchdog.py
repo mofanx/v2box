@@ -411,7 +411,7 @@ def timer_status() -> tuple[bool, str]:
 # 钩子本身不直接重启 sing-box，而是触发一次看门狗探测 —— 是否修复
 # 由状态机的二次确认/连续阈值/限流决定，天然免疫重启风暴。
 _HOOK_SCRIPT = r"""#!/bin/sh
-# v2box nethook — 物理链路事件触发看门狗探测（秒级加速层）
+# v2box nethook - trigger watchdog check on physical link events (fast path)
 IFACE="$1"; EVENT="$2"
 case "$IFACE" in
   lo|tun*|utun*|veth*|docker*|br-*|virbr*|vboxnet*|vmnet*|zt*|tailscale*|podman*|wg*) exit 0 ;;

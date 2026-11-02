@@ -209,7 +209,7 @@ WantedBy=multi-user.target
 
     # 只响应物理网卡事件，过滤 tun/docker 等虚拟接口，60s 防抖防重启风暴
     _HOOK_SCRIPT = r"""#!/bin/sh
-# v2box 网络变更钩子 — 物理链路变化时重启 sing-box（看门狗的加速补充）
+# v2box nethook - restart sing-box on physical link changes (watchdog fast path)
 IFACE="$1"; EVENT="$2"
 case "$IFACE" in tun*|utun*|lo|docker*|veth*|br-*|virbr*|podman*|wg*|zt*|tailscale*) exit 0 ;; esac
 case "$EVENT" in up|dhcp4-change|dhcp6-change|connectivity-change|routable) ;; *) exit 0 ;; esac
