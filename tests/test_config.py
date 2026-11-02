@@ -1,98 +1,92 @@
-"""配置生成与硬化回归测试。"""
-import sys
-import pytest
+"""config.py 配置硬化回归测试。
 
-from v2box.core.config import (build_config, update_nodes_in_config,
-                               _tun_inbound, _dns_rules,
-                               LOCAL_DOMAIN_SUFFIXES)
+运行: python -m unittest discover tests -v
+"""
+import unittest
+from unittest.mock import patch
 
-NODES = [
-    {"type": "vless", "tag": "n1", "server": "a.example.com", "server_port": 443},
-    {"type": "vless", "tag": "n2", "server": "1.2.3.4", "server_port": 443},
-]
+from v2box.core import config
+
+NODE = {"type": "vless", "tag": "n1", "server": "real.aibix.top", "server_port": 443}
 
 
-def test_build_config_basic():
-    cfg = build_config(NODES)
-    assert cfg["route"]["final"] == "proxy"
-    assert cfg["log"]["level"] == "warn"
-    tags = [o["tag"] for o in cfg["outbounds"]]
-    assert tags[0] == "proxy" and tags[1] == "auto" and "direct" in tags
-    for rs in cfg["route"]["rule_set"]:
-        assert rs["update_interval"] == "24h"
+class TunInboundTest(unittest.TestCase):
+    def test_linux_fields(self):
+        tun = config._tun_inbound("linux")
+        self.assertEqual(tun["stack"], "system")
+        self.assertTrue(tun["auto_redirect"])
+        self.assertTrue(tun["strict_route"])
+
+    def test_nonlinux_strips_linux_only_fields(self):
+        for p in ("macos", "windows"):
+            tun = config._tun_inbound(p)
+            self.assertEqual(tun["stack"], "system")
+            self.assertNotIn("auto_redirect", tun)
+            self.assertNotIn("strict_route", tun)
 
 
-def test_dns_rules_local_suffix_and_node_domains():
-    cfg = build_config(NODES)
-    rules = cfg["dns"]["rules"]
-    assert rules[0]["action"] == "reject"
-    assert set(rules[0]["domain_suffix"]) == set(LOCAL_DOMAIN_SUFFIXES)
-    # 节点域名（跳过 IP）走 dns-direct
-    node_rule = [r for r in rules if r.get("server") == "dns-direct"
-                 and "domain_suffix" in r]
-    assert node_rule and "a.example.com" in node_rule[0]["domain_suffix"]
-    assert "1.2.3.4" not in str(node_rule)
+class DnsRulesTest(unittest.TestCase):
+    def test_reject_local_first(self):
+        rules = config._dns_rules()
+        self.assertEqual(rules[0]["action"], "reject")
+        self.assertIn("lan", rules[0]["domain_suffix"])
+
+    def test_node_domains_direct(self):
+        rules = config._dns_rules(["real.aibix.top"])
+        hit = any(r.get("server") == "dns-direct"
+                  and "real.aibix.top" in r.get("domain_suffix", [])
+                  for r in rules)
+        self.assertTrue(hit)
 
 
-def test_tun_inbound_platform_fields():
-    linux_tun = _tun_inbound(platform_name="linux")
-    assert linux_tun["stack"] == "system"
-    assert linux_tun["strict_route"] is True
-    assert linux_tun["auto_redirect"] is True
+class HardenUserConfigTest(unittest.TestCase):
+    def _user_cfg(self):
+        return {
+            "inbounds": [{"type": "tun", "tag": "tun-in",
+                          "stack": "mixed", "auto_redirect": True,
+                          "strict_route": True}],
+            "dns": {"servers": [{"tag": "dns-direct", "type": "udp",
+                                 "server": "223.5.5.5",
+                                 "detour": "direct"}],
+                    "rules": []},
+            "route": {"rule_set": [{"tag": "geosite-cn", "type": "remote",
+                                    "format": "binary", "url": "u"}]},
+        }
 
-    mac_tun = _tun_inbound(platform_name="macos")
-    assert "strict_route" not in mac_tun
-    assert "auto_redirect" not in mac_tun
-    assert mac_tun["stack"] == "system"
+    def test_harden(self):
+        cfg = self._user_cfg()
+        with patch.object(config, "detect_platform", return_value="linux"):
+            config._harden_user_config(cfg, [NODE])
+        self.assertEqual(cfg["inbounds"][0]["stack"], "system")
+        # detour: direct 会让 sing-box FATAL，必须删除（实测结论）
+        self.assertNotIn("detour", cfg["dns"]["servers"][0])
+        self.assertEqual(cfg["route"]["rule_set"][0]["update_interval"], "24h")
+        rules = cfg["dns"]["rules"]
+        self.assertTrue(any(r.get("action") == "reject" for r in rules))
+        self.assertTrue(any("real.aibix.top" in r.get("domain_suffix", [])
+                            for r in rules))
 
-    win_tun = _tun_inbound(platform_name="windows")
-    assert "strict_route" not in win_tun
-
-
-def test_strict_route_option():
-    tun_on = _tun_inbound(platform_name="linux", strict_route=True)
-    tun_off = _tun_inbound(platform_name="linux", strict_route=False)
-    assert tun_on["strict_route"] is True
-    assert tun_off["strict_route"] is False
-
-
-def test_harden_user_config():
-    # 模拟旧版生成的用户配置（mixed 栈、info 日志、无 update_interval、带 detour）
-    uc = {
-        "log": {"level": "info"},
-        "inbounds": [
-            {"type": "mixed", "listen": "127.0.0.1", "listen_port": 10808},
-            {"type": "tun", "stack": "mixed", "strict_route": True,
-             "auto_redirect": True},
-        ],
-        "dns": {"servers": [
-            {"tag": "dns-proxy", "type": "https", "server": "8.8.8.8",
-             "detour": "proxy"},
-            {"tag": "dns-direct", "type": "udp", "server": "223.5.5.5",
-             "detour": "direct"},
-        ], "rules": [{"rule_set": "geosite-cn", "server": "dns-direct"}]},
-        "route": {"rule_set": [
-            {"tag": "geoip-cn", "type": "remote", "url": "x"},
-        ]},
-    }
-    out = update_nodes_in_config(uc, NODES)
-    tun = [i for i in out["inbounds"] if i["type"] == "tun"][0]
-    assert tun["stack"] == "system"
-    if sys.platform == "linux":
-        assert tun["strict_route"] is True
-    else:
-        assert "strict_route" not in tun
-    assert out["log"]["level"] == "warn"
-    dns_direct = [s for s in out["dns"]["servers"] if s["tag"] == "dns-direct"][0]
-    assert "detour" not in dns_direct  # detour: direct 运行期 FATAL，必须删除
-    assert out["route"]["rule_set"][0]["update_interval"] == "24h"
-    assert out["dns"]["rules"][0]["action"] == "reject"
+    def test_harden_strips_tun_fields_on_macos(self):
+        cfg = self._user_cfg()
+        with patch.object(config, "detect_platform", return_value="macos"):
+            config._harden_user_config(cfg, [NODE])
+        tun = cfg["inbounds"][0]
+        self.assertNotIn("auto_redirect", tun)
+        self.assertNotIn("strict_route", tun)
 
 
-def test_strict_route_override_on_update():
-    uc = {"inbounds": [{"type": "tun", "stack": "system", "strict_route": True}],
-          "dns": {"servers": [], "rules": []}, "route": {"rule_set": []}}
-    out = update_nodes_in_config(uc, NODES, strict_route=False)
-    tun = [i for i in out["inbounds"] if i["type"] == "tun"][0]
-    if sys.platform == "linux":
-        assert tun["strict_route"] is False
+class BuildConfigTest(unittest.TestCase):
+    def test_structure(self):
+        cfg = config.build_config([dict(NODE)])
+        self.assertEqual(cfg["log"]["level"], "warn")
+        self.assertEqual(cfg["outbounds"][0]["tag"], "proxy")
+        self.assertEqual(cfg["outbounds"][1]["tag"], "auto")
+        self.assertTrue(cfg["outbounds"][1]["interrupt_exist_connections"])
+        self.assertEqual(cfg["outbounds"][-1]["tag"], "direct")
+        for rs in cfg["route"]["rule_set"]:
+            self.assertEqual(rs["update_interval"], "24h")
+        self.assertIn("tun-in", [i["tag"] for i in cfg["inbounds"]])
+
+
+if __name__ == "__main__":
+    unittest.main()

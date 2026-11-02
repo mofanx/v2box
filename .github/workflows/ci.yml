@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          pip install -e . pytest
+      - name: Run tests
+        run: pytest tests/ -v
+
+  config-smoke:
+    name: sing-box config smoke (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install v2box
+        run: pip install -e . pytest
+      - name: Download sing-box
+        run: |
+          curl -fsSL -o sing-box.tar.gz \
+            https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-amd64.tar.gz
+          tar xzf sing-box.tar.gz
+          sudo cp sing-box-*/sing-box /usr/local/bin/
+          sing-box version
+      - name: Generate config from synthetic node (no real nodes)
+        run: |
+          export V2BOX_DATA_DIR=$PWD/.ci-data
+          v2box add "vless://00000000-0000-0000-0000-000000000000@node1.example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws#ci-ws-node" \
+                    "vless://00000000-0000-0000-0000-000000000001@198.51.100.1:443?security=reality&sni=www.microsoft.com&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA#ci-reality-node"
+          v2box apply -o ci-config.json
+          v2box apply --no-strict-route -o ci-config-nosr.json
+      - name: Validate with sing-box check
+        run: |
+          sing-box check -c ci-config.json
+          sing-box check -c ci-config-nosr.json
+      - name: Validate platform-specific TUN fields
+        run: |
+          python - <<'EOF'
+          import json
+          cfg = json.load(open("ci-config.json"))
+          tun = next(i for i in cfg["inbounds"] if i["type"] == "tun")
+          assert tun["stack"] == "system"
+          assert tun.get("auto_redirect") and tun.get("strict_route")
+          cfg2 = json.load(open("ci-config-nosr.json"))
+          tun2 = next(i for i in cfg2["inbounds"] if i["type"] == "tun")
+          assert tun2.get("strict_route") is False, tun2
+          for rs in cfg["route"]["rule_set"]:
+              assert rs.get("update_interval"), rs
+          rules = cfg["dns"]["rules"]
+          assert rules[0]["action"] == "reject"
+          node_rules = [r for r in rules if "node1.example.com" in r.get("domain_suffix", [])]
+          assert node_rules and node_rules[0]["server"] == "dns-direct"
+          print("platform field assertions OK")
+          EOF
