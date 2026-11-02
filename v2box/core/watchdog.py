@@ -27,13 +27,14 @@ from v2box.core.store import DATA_DIR
 def _state_path() -> Path:
     """看门狗状态文件路径 — root（systemd timer）与普通用户读写同一份。
 
-    优先级: V2BOX_WATCHDOG_STATE > /run/v2box（unit 的 RuntimeDirectory 保证存在，
-    root 写入、用户可读）> 用户数据目录。
+    优先级: V2BOX_WATCHDOG_STATE > /var/lib/v2box（unit 的 StateDirectory 保证
+    跨 tick 持久——不能用 /run/v2box RuntimeDirectory，oneshot 停止即被清空）
+    > 用户数据目录。
     """
     import os
     if env := os.environ.get("V2BOX_WATCHDOG_STATE"):
         return Path(env)
-    run_dir = Path("/run/v2box")
+    run_dir = Path("/var/lib/v2box")
     if run_dir.is_dir() or (hasattr(os, "geteuid") and os.geteuid() == 0):
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -319,7 +320,7 @@ Description=v2box watchdog check — sing-box 链路僵死自愈
 
 [Service]
 Type=oneshot
-RuntimeDirectory=v2box
+StateDirectory=v2box
 ExecStart={_v2box_bin()} watchdog check
 """
     timer_text = f"""[Unit]
