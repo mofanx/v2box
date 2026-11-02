@@ -11,6 +11,7 @@
   v2box start / stop / restart    管理 sing-box 服务
 """
 
+import os
 import sys
 
 import click
@@ -23,7 +24,7 @@ from v2box import __version__
 from v2box.parsers import parse_link, supported_protocols
 from v2box.core.store import (
     load_nodes, add_nodes, remove_node, clear_nodes,
-    load_state, set_selected_node, set_mode, set_lan, set_port,
+    load_state, set_selected_node, set_mode, set_lan, set_port, set_strict_route,
     load_subs, add_sub, remove_sub, update_sub_meta,
     remove_nodes_by_source,
 )
@@ -399,7 +400,8 @@ def cmd_auto():
 @click.option("--no-lan", is_flag=True, default=None, help="关闭局域网代理（仅本机）")
 @click.option("-p", "--port", "listen_port", type=int, default=None, help="代理监听端口")
 @click.option("--download-detour", "download_detour", default=None, help="规则集下载出站，如 direct 或节点名（默认 auto/direct）")
-def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour):
+@click.option("--strict-route/--no-strict-route", "strict_route", default=None, help="启用/关闭 TUN strict_route（默认启用；网络频繁漫游可用 --no-strict-route 降低失效面，设置会被记住）")
+def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour, strict_route):
     """根据已导入的节点生成并应用 sing-box 配置。
 
     \b
@@ -430,16 +432,22 @@ def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour
         use_lan = False
     use_port = listen_port or state.get("port", MIXED_LISTEN_PORT)
 
+    if strict_route is not None:
+        set_strict_route(strict_route)
+    resolved_strict = strict_route if strict_route is not None else state.get("strict_route")
+
     config = apply_config(nodes, mode=mode, selected=selected,
                           lan=use_lan, port=use_port,
-                          download_detour=download_detour)
+                          download_detour=download_detour,
+                          strict_route=resolved_strict)
 
     # 移除 TUN
     if no_tun:
         config["inbounds"] = [ib for ib in config["inbounds"] if ib.get("type") != "tun"]
 
     if dry_run:
-        console.print(config_to_json(config))
+        # 用内置 print 而非 rich console —— 管道输出时 rich 会按宽度折行破坏 JSON
+        print(config_to_json(config))
         return
 
     target = Path(output) if output else SINGBOX_CONFIG_PATH
@@ -1211,6 +1219,225 @@ def reset():
     reset_user_config()
     console.print(f"[green]✓[/green] 用户配置已删除: {USER_CONFIG_PATH}")
     console.print("[dim]提示: 运行 v2box apply 会重新生成默认配置[/dim]")
+
+
+# ── watchdog: 自愈看门狗 ────────────────────────────────────────
+
+@cli.group("watchdog")
+def cmd_watchdog():
+    """看门狗：探测 sing-box 数据通道，确认僵死后自动修复。
+
+    \b
+    探测逻辑（症状驱动，不限定触发原因）:
+      用系统解析器验证 direct DNS 链路 —— 网卡漫游/休眠唤醒/
+      路由表损坏等导致 sing-box 出站僵死时该链路必然超时，
+      连续多次失败后先热加载、再升级重启。
+
+    \b
+    示例:
+      v2box watchdog check          # 执行一轮探测（供定时器调用）
+      v2box watchdog run            # 前台常驻看门狗（任意平台可用）
+      v2box watchdog install        # 安装 systemd 定时器（每 2 分钟探测）
+      v2box watchdog status         # 查看定时器和看门狗状态
+      v2box watchdog uninstall      # 卸载定时器
+    """
+    pass
+
+
+@cmd_watchdog.command("check")
+@click.option("--domain", "probe_domain", default=None,
+              help="探测用域名（默认 www.baidu.com，应命中 dns-direct）")
+@click.option("--dry-run", is_flag=True, help="只探测判定，不执行修复动作")
+def cmd_watchdog_check(probe_domain, dry_run):
+    """执行一轮看门狗探测。
+
+    \b
+    判定结果:
+      healthy    通道正常
+      stopped    sing-box 未运行（跳过，尊重手动停止）
+      nodes      节点链路死（DNS 通，重启无意义，不修复）
+      underlay   direct/DNS 通道僵死 → 触发修复（先 reload 再 restart）
+      api_dead   进程僵死（API 无响应）→ 触发修复
+
+    \b
+    示例:
+      v2box watchdog check
+      v2box watchdog check --dry-run
+      v2box watchdog check --domain www.aliyun.com
+    """
+    from v2box.core import watchdog, health
+
+    domain = probe_domain or health.DEFAULT_PROBE_DOMAIN
+    r = watchdog.check_once(probe_domain=domain, dry_run=dry_run)
+
+    verdict = r["verdict"]
+    style = {
+        health.HEALTHY: "green", health.STOPPED: "dim",
+        health.NODES_DEAD: "yellow",
+        health.UNDERLAY_DEAD: "red", health.API_DEAD: "red",
+    }.get(verdict, "white")
+
+    dns_str = f"{r['dns_direct_ms']:.0f}ms" if r["dns_direct_ms"] is not None else "超时"
+    node_str = f"{r['node_delay_ms']}ms" if r["node_delay_ms"] is not None else "-"
+    console.print(
+        f"[{style}]{verdict}[/{style}]  "
+        f"api={'✓' if r['clash_api'] else '✗'}  "
+        f"dns={dns_str}  node={node_str}  "
+        f"fail_count={r['fail_count']}  action={r['action']}"
+    )
+
+
+@cmd_watchdog.command("run")
+@click.option("--interval", default=120, show_default=True,
+              help="探测间隔（秒）")
+@click.option("--domain", "probe_domain", default=None, help="探测用域名")
+def cmd_watchdog_run(interval, probe_domain):
+    """前台常驻看门狗循环 — 任何 OS / 任何 supervisor 均可用。
+
+    \b
+    非 systemd 环境（容器、Alpine、其他 init）或手动托管时使用。
+    也可以交给任意进程管理器（supervisord/runit/launchd）运行。
+
+    \b
+    示例:
+      v2box watchdog run
+      v2box watchdog run --interval 60
+    """
+    from v2box.core import watchdog, health
+    console.print(f"[dim]看门狗已启动，每 {interval}s 探测一次 (Ctrl+C 退出)[/dim]")
+    try:
+        watchdog.run_loop(interval=interval,
+                          probe_domain=probe_domain or health.DEFAULT_PROBE_DOMAIN)
+    except KeyboardInterrupt:
+        console.print("\n[dim]看门狗已退出[/dim]")
+
+
+@cmd_watchdog.command("install")
+@click.option("--with-nethook", is_flag=True,
+              help="同时安装 NetworkManager 网络变更钩子（秒级恢复，Linux+NM 可选）")
+def cmd_watchdog_install(with_nethook):
+    """安装看门狗常驻任务（Linux: systemd 定时器；macOS/Windows 委托服务后端）。
+
+    \b
+    Linux 安装后:
+      /etc/systemd/system/v2box-watchdog.service  (oneshot 探测)
+      /etc/systemd/system/v2box-watchdog.timer    (每 2 分钟触发)
+
+    \b
+    示例:
+      v2box watchdog install
+      v2box watchdog install --with-nethook   # 附带网络变更秒级恢复钩子
+    """
+    from v2box.core import watchdog
+    ok, msgs = watchdog.install(with_nethook=with_nethook)
+    for m in msgs:
+        console.print(("  [green]✓[/green] " if ok or "已" in m or "ok" in m
+                       else "  [red]✗[/red] ") + m)
+    if ok:
+        console.print("\n[bold green]✓[/bold green] 看门狗已启用，"
+                      "僵死故障将自动修复")
+        console.print("[dim]查看: v2box watchdog status | 卸载: v2box watchdog uninstall[/dim]")
+
+
+@cmd_watchdog.command("uninstall")
+def cmd_watchdog_uninstall():
+    """卸载看门狗（含定时器和网络变更钩子）。
+
+    \b
+    示例:
+      v2box watchdog uninstall
+    """
+    from v2box.core import watchdog
+    ok, msgs = watchdog.uninstall()
+    for m in msgs:
+        console.print("  " + m)
+
+
+@cmd_watchdog.command("status")
+def cmd_watchdog_status():
+    """查看看门狗定时器和最近状态。
+
+    \b
+    示例:
+      v2box watchdog status
+    """
+    from v2box.core import watchdog
+    active, detail = watchdog.timer_status()
+    console.print(f"[bold]定时器:[/bold] {'[green]运行中[/green]' if active else '[dim]未安装/未激活[/dim]'}")
+    if watchdog.nethook_installed():
+        console.print("[bold]网络钩子:[/bold] [green]已安装[/green]（链路变化秒级探测）")
+    state = watchdog.load_state()
+    console.print(f"[bold]失败计数:[/bold] {state.get('fail_count', 0)}")
+    if state.get("last_repair_ts"):
+        import datetime
+        ts = datetime.datetime.fromtimestamp(state["last_repair_ts"])
+        console.print(f"[bold]上次修复:[/bold] {ts:%F %T} ({state.get('last_repair_kind', '?')})")
+    recent = watchdog._repairs_last_hour(state)
+    console.print(f"[bold]近1h修复:[/bold] {len(recent)} 次")
+    console.print(f"[bold]网络钩子:[/bold] {'[green]已安装[/green]' if watchdog.nethook_installed() else '[dim]未安装[/dim]'}")
+
+
+# ── doctor: 连通性诊断 ──────────────────────────────────────────
+
+@cli.command("doctor")
+@click.option("--domain", "probe_domain", default=None, help="探测用域名")
+def cmd_doctor(probe_domain):
+    """全面诊断 sing-box 通道健康状态并给出修复建议。
+
+    \b
+    检查项: 服务活性 / Clash API / direct DNS 链路 / 节点延迟，
+    区分"通道僵死(需重启)"与"节点死(换节点)"。
+
+    \b
+    示例:
+      v2box doctor
+      v2box doctor --domain www.aliyun.com
+    """
+    from v2box.core import health, watchdog
+
+    domain = probe_domain or health.DEFAULT_PROBE_DOMAIN
+    console.print(f"[dim]正在诊断 (探针域名: {domain})...[/dim]\n")
+
+    if service.is_installed():
+        console.print(f"[green]✓[/green] sing-box 已安装 ({service.get_version()})")
+    else:
+        console.print("[red]✗[/red] sing-box 未安装")
+        return
+    console.print(f"[bold]服务后端:[/bold] {service.backend().name}")
+
+    report = health.diagnose(domain)
+
+    console.print(f"[bold]服务状态:[/bold] {'运行中' if report['service_active'] else '未运行'}")
+    console.print(f"[bold]Clash API:[/bold] {'✓ 可用' if report['clash_api'] else '✗ 无响应'}")
+    dns_ms = report["dns_direct_ms"]
+    console.print(f"[bold]direct DNS:[/bold] "
+                  + (f"[green]{dns_ms:.0f}ms[/green]" if dns_ms is not None
+                     else "[red]超时（direct 链路僵死）[/red]"))
+    node_ms = report["node_delay_ms"]
+    console.print(f"[bold]节点延迟:[/bold] "
+                  + (f"{node_ms}ms" if node_ms is not None else "不可用"))
+
+    verdict = report["verdict"]
+    advice = {
+        health.HEALTHY: ("green", "通道健康，无需处理"),
+        health.STOPPED: ("dim", "服务未运行；如需启动: v2box start"),
+        health.UNDERLAY_DEAD: ("red", "direct/DNS 通道僵死 → 建议 v2box restart；"
+                                     "安装 v2box watchdog install 可自动修复"),
+        health.API_DEAD: ("red", "进程僵死 → 建议 v2box restart"),
+        health.NODES_DEAD: ("yellow", "DNS 正常但代理链路死 → 重启无用；"
+                                     "请检查节点/订阅（v2box test / v2box use 切换）"),
+    }.get(verdict, ("white", ""))
+
+    console.print(f"\n[bold]结论:[/bold] [{advice[0]}]{verdict}[/{advice[0]}] — {advice[1]}")
+
+    hint = health.cache_db_hint()
+    if hint:
+        console.print(f"[bold yellow]⚠ 状态目录异常:[/bold yellow] {hint}")
+
+    t_active, _ = watchdog.timer_status()
+    console.print(f"[bold]看门狗:[/bold] "
+                  + ("[green]已启用[/green]" if t_active
+                     else "[dim]未启用（v2box watchdog install 开启自动自愈）[/dim]"))
 
 
 
