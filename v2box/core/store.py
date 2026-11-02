@@ -138,6 +138,13 @@ def set_port(port: int):
     save_state(state)
 
 
+def set_strict_route(enabled: bool | None):
+    """设置 TUN strict_route 偏好（None = 恢复默认 true）。"""
+    state = load_state()
+    state["strict_route"] = enabled
+    save_state(state)
+
+
 def remove_nodes_by_source(source: str) -> int:
     """删除指定来源的所有节点，返回删除数量。"""
     nodes = load_nodes()
