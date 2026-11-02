@@ -74,7 +74,17 @@ def _save_state(state: dict):
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     state["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    path.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+    try:
+        path.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+        # root 写入后放开权限，用户态 check/status 才能续写
+        try:
+            path.chmod(0o666)
+        except OSError:
+            pass
+    except PermissionError:
+        # 非 root 上下文写不了共享路径，回落到用户数据目录
+        fb = DATA_DIR / "watchdog.json"
+        fb.write_text(json.dumps(state, indent=2, ensure_ascii=False))
 
 
 def _repairs_last_hour(state: dict) -> list:
