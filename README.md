@@ -162,6 +162,37 @@ v2box stop       # 停止 sing-box
 v2box restart    # 重启 sing-box
 ```
 
+### `v2box watchdog` — 自愈看门狗
+
+sing-box 的 TUN/direct 通道在网卡漫游、休眠唤醒、DHCP 续租等网络变更后可能僵死
+（进程活着但数据通道坏死）。看门狗通过**症状探针**（四层：服务活性 → Clash API
+→ direct DNS → 节点延迟）自动检测并修复，与触发原因和 init 系统无关。
+
+```bash
+v2box doctor                     # 诊断通道健康（一次性全面检查）
+v2box watchdog install           # 安装看门狗（Linux: systemd 定时器每 2 分钟探测）
+v2box watchdog install --with-nethook   # 附带 NM 网络变更钩子（秒级恢复，可选）
+v2box watchdog check             # 手动执行一轮探测
+v2box watchdog check --dry-run   # 只判定不修复
+v2box watchdog run               # 前台常驻模式（非 systemd 平台/容器可用）
+v2box watchdog status            # 查看定时器和修复统计
+v2box watchdog uninstall         # 卸载定时器
+```
+
+判定逻辑：连续 2 次确认 direct/DNS 通道僵死 → 先 `reload`（SIGHUP 热加载重建
+TUN，进程不断）→ 仍死则升级 `restart`。节点全灭（DNS 正常但代理不通）不会触发
+重启——重启救不了死节点；服务被手动停止时自动跳过。防抖：连续失败计数 + 修复
+最小间隔 + 每小时上限。
+
+> 平台说明：Linux/systemd 为完整实现并经真机验证；macOS(launchd)/Windows(服务)
+> 后端为同接口适配实现，未经真机测试，欢迎反馈。
+
+### `v2box doctor` — 连通性诊断
+
+```bash
+v2box doctor    # 检查服务/Clash API/direct DNS/节点延迟，区分"通道僵死"与"节点死"
+```
+
 ### `v2box status` — 查看状态
 
 ```bash

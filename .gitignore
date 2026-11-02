@@ -222,6 +222,10 @@ tests/
 test_nodes.txt
 test_config.json
 
+# 但保留 tests/ 下的正式回归测试套件
+!tests/
+!tests/**
+
 # 性能分析文件
 *.prof
 *.profile
