@@ -1279,7 +1279,12 @@ def cmd_watchdog_check(probe_domain, dry_run):
 
     dns_str = f"{r['dns_direct_ms']:.0f}ms" if r["dns_direct_ms"] is not None else "超时"
     node_str = f"{r['node_delay_ms']}ms" if r["node_delay_ms"] is not None else "-"
-    console.print(
+    # 异常/修复走 stderr：配合 unit 的 LogLevelMax=warning，healthy 行不进 journal，
+    # 但 underlay/reload/restart 等关键事件仍然可见（stderr 优先级不被滤掉）
+    out = (Console(stderr=True)
+           if verdict != health.HEALTHY or r["action"] not in ("none", "wait")
+           else console)
+    out.print(
         f"[{style}]{verdict}[/{style}]  "
         f"api={'✓' if r['clash_api'] else '✗'}  "
         f"dns={dns_str}  node={node_str}  "
@@ -1316,12 +1321,12 @@ def cmd_watchdog_run(interval, probe_domain):
 @click.option("--with-nethook", is_flag=True,
               help="同时安装 NetworkManager 网络变更钩子（秒级恢复，Linux+NM 可选）")
 def cmd_watchdog_install(with_nethook):
-    """安装看门狗常驻任务（Linux: systemd 定时器；macOS/Windows 委托服务后端）。
+    """安装看门狗常驻任务（Linux: systemd 常驻服务；macOS/Windows 委托服务后端）。
 
     \b
     Linux 安装后:
-      /etc/systemd/system/v2box-watchdog.service  (oneshot 探测)
-      /etc/systemd/system/v2box-watchdog.timer    (每 2 分钟触发)
+      /etc/systemd/system/v2box-watchdog.service  (常驻探测)
+      
 
     \b
     示例:
@@ -1363,7 +1368,7 @@ def cmd_watchdog_status():
     """
     from v2box.core import watchdog
     active, detail = watchdog.timer_status()
-    console.print(f"[bold]定时器:[/bold] {'[green]运行中[/green]' if active else '[dim]未安装/未激活[/dim]'}")
+    console.print(f"[bold]守护服务:[/bold] {'[green]运行中[/green]' if active else '[dim]未安装/未激活[/dim]'}")
     if watchdog.nethook_installed():
         console.print("[bold]网络钩子:[/bold] [green]已安装[/green]（链路变化秒级探测）")
     state = watchdog.load_state()
