@@ -1604,3 +1604,101 @@ def cmd_rollback():
     from v2box.core import updater
     ok, msg = updater.rollback_config(str(SINGBOX_CONFIG_PATH))
     console.print(f"[green]✓[/green] {msg}" if ok else f"[red]✗[/red] {msg}")
+
+
+@cli.command("ui")
+def cmd_ui():
+    """打开 Clash API 可视面板（本地 serve zashboard，首次自动下载）。
+
+    \b
+    示例:
+      v2box ui
+    """
+    from v2box.core import ui
+    ui.open_ui(log=lambda m: console.print(f"  {m}"))
+
+
+@cli.command("ui")
+@click.option("--port", default=9099, help="面板本地端口")
+@click.option("--no-open", is_flag=True, help="只起服务不打开浏览器")
+def cmd_ui(port, no_open):
+    """打开 sing-box Web 面板（zashboard，Clash API 直连本机）。
+
+    \b
+    首次使用自动下载面板静态包到 ~/.config/v2box/ui/，
+    之后完全本地离线可用。面板里后端填 127.0.0.1:9090。
+    """
+    import http.server as _hs
+    import socketserver as _ss
+    import urllib.request as _ur
+    import webbrowser as _wb
+    import zipfile as _zf
+    from pathlib import Path as _P
+
+    ui_dir = Path.home() / ".config" / "v2box" / "ui"
+    idx = ui_dir / "index.html"
+    if not idx.exists():
+        console.print("首次运行，下载 zashboard 面板（~3MB）...")
+        ui_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = ui_dir / "_dl.zip"
+        try:
+            import json as _json
+            with _ur.urlopen("https://api.github.com/repos/Zephyruso/zashboard/releases/latest",
+                             timeout=15) as r:
+                url = next(a["browser_download_url"] for a in _json.loads(r.read())["assets"]
+                           if a["name"] == "dist.zip")
+            _ur.urlretrieve(url, zip_path)
+            with _zf.ZipFile(zip_path) as z:
+                z.extractall(ui_dir)
+            zip_path.unlink()
+        except Exception as e:
+            console.print(f"[red]✗[/red] 面板下载失败: {e}")
+            console.print("[dim]可手动将 zashboard dist.zip 解压到 ~/.config/v2box/ui/[/dim]")
+            return
+        console.print("[green]✓[/green] 面板就绪")
+
+    class _Quiet(_hs.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=str(ui_dir), **kw)
+
+    try:
+        srv = _ss.ThreadingTCPServer(("127.0.0.1", port), _Quiet)
+        srv.allow_reuse_address = True
+    except OSError as e:
+        console.print(f"[red]✗[/red] 端口 {port} 被占用: {e}")
+        return
+    url = f"http://127.0.0.1:{port}"
+    console.print(f"[green]✓[/green] 面板运行中: {url}  (Ctrl+C 停止)")
+    console.print("[dim]后端 API: 127.0.0.1:9090[/dim]")
+    if not no_open:
+        _wb.open(url)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n已停止")
+
+
+@cli.command("ui")
+@click.option("-p", "--port", default=9099, show_default=True, help="本地面板服务端口")
+@click.option("--web", is_flag=True, help="使用 CDN 面板（无需下载本地资源）")
+def cmd_ui(port, web):
+    """打开 Web 面板（metacubexd）— 可视化管理节点/流量/连接。
+
+    \b
+    默认本地托管面板资源（首次自动下载 ~2MB），浏览器打开后按 Ctrl+C 停止。
+    --web 直接打开 CDN 版面板，无需本地资源。
+
+    \b
+    示例:
+      v2box ui            # 本地面板 http://127.0.0.1:9099
+      v2box ui --web      # CDN 面板（联网）
+      v2box ui -p 8080    # 自定义端口
+    """
+    from v2box.core import ui
+    url = ui.open_ui(port=port, web=web,
+                     log=lambda m: console.print(f"  {m}"))
+    if url:
+        console.print(f"[green]✓[/green] 面板已打开: {url}")
