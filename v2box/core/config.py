@@ -321,7 +321,12 @@ def update_nodes_in_config(user_config: dict, nodes: list[dict], mode: str = "au
     _harden_user_config(user_config, outbounds, strict_route=strict_route)
     return user_config
 
-def apply_config(nodes: list[dict], mode: str = "auto", selected: str | None = None, lan: bool = False, port: int = MIXED_LISTEN_PORT, download_detour: str | None = None, strict_route: bool | None = None) -> dict:
+def apply_config(nodes: list[dict], mode: str = "auto", selected: str | None = None, lan: bool = False, port: int = MIXED_LISTEN_PORT, download_detour: str | None = None, strict_route: bool | None = None, mux: bool | None = None) -> dict:
+    if mux:
+        _mx = {"enabled": True, "protocol": "smux", "max_connections": 8, "padding": False}
+        nodes = [dict(n, multiplex=_mx)
+                 if n.get("type") != "direct" and "multiplex" not in n else n
+                 for n in nodes]
     user_config = load_user_config()
     if user_config is None:
         config = build_config(nodes, mode=mode, selected=selected, lan=lan, port=port, download_detour=download_detour, strict_route=strict_route)
