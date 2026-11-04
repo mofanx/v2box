@@ -276,3 +276,13 @@ def get_server(name: str) -> dict | None:
 def get_data_dir() -> Path:
     """返回数据目录路径。"""
     return DATA_DIR
+
+
+def set_sub_auto(enabled: bool | None, hours: int | None = None):
+    """订阅自动更新偏好：enabled=False 关闭；hours 为刷新间隔（默认 24h）。"""
+    state = load_state()
+    if enabled is not None:
+        state["sub_auto"] = enabled
+    if hours is not None:
+        state["sub_auto_hours"] = hours
+    save_state(state)

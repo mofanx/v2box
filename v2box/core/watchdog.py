@@ -266,6 +266,68 @@ def _ip_monitor(trigger: threading.Event, stop: threading.Event):
         time.sleep(2)
 
 
+SUB_AUTO_HOURS = 24        # 订阅自动更新默认间隔（小时）
+
+def _maybe_update_subs(log):
+    """订阅自动更新：state.sub_auto 开启且距上次刷新超过间隔时静默执行。
+
+    全部走既有路径：fetch → parse → 替换节点 → apply_config（含自动回滚）
+    → service.reload。失败只记日志，不影响看门狗主循环。
+    """
+    from v2box.core import store
+    st = store.load_state()
+    if not st.get("sub_auto"):
+        return
+    hours = st.get("sub_auto_hours") or SUB_AUTO_HOURS
+    last = st.get("sub_auto_ts", 0)
+    if time.time() - last < hours * 3600:
+        return
+
+    from v2box.core.subscription import fetch_subscription, parse_subscription
+    from v2box.core.config import apply_config
+
+    subs = store.load_subs()
+    if not subs:
+        return
+    log("订阅自动更新开始")
+    changed = 0
+    for sub in subs:
+        name = sub["name"]
+        try:
+            nodes, failed = parse_subscription(
+                fetch_subscription(sub["url"]), source=f"sub:{name}")
+        except Exception as e:
+            log(f"订阅 {name} 拉取失败: {str(e)[:80]}")
+            continue
+        if not nodes:
+            continue
+        removed = store.remove_nodes_by_source(f"sub:{name}")
+        added, _ = store.add_nodes(nodes)
+        store.update_sub_meta(name, added)
+        changed += added
+        log(f"订阅 {name}: {added} 节点（替换 {removed}）")
+
+    st["sub_auto_ts"] = time.time()
+    st["sub_auto"] = True
+    store.save_state(st)
+    if changed:
+        try:
+            from v2box.core.config import MIXED_LISTEN_PORT
+            cfg = apply_config(
+                store.load_nodes(),
+                mode=st.get("mode", "auto"),
+                selected=st.get("selected"),
+                lan=st.get("lan", False),
+                port=st.get("port") or MIXED_LISTEN_PORT,
+                strict_route=st.get("strict_route"),
+                mux=st.get("mux"),
+            )
+            ok, msg = service.reload()
+            log(f"订阅更新应用{changed}节点, reload={'ok' if ok else msg[:80]}")
+        except Exception as e:
+            log(f"订阅更新应用失败: {str(e)[:80]}")
+
+
 def run_loop(interval: int = 120, probe_domain: str | None = None):
     """常驻看门狗循环：周期探测 + 链路事件即时探测。"""
     def log(msg):
@@ -294,6 +356,8 @@ def run_loop(interval: int = 120, probe_domain: str | None = None):
             log(f"探测异常: {e}")
         if by_event:
             time.sleep(1)
+        if r.get("verdict") == health.HEALTHY:
+            _maybe_update_subs(log)
 
 
 # ── systemd 定时器安装 ────────────────────────────────────────

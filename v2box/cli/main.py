@@ -359,7 +359,7 @@ def cmd_use(name):
         else:
             console.print("[yellow]⚠[/yellow] Clash API 切换失败，请运行 v2box apply && v2box restart")
     else:
-        console.print("[dim]提示: 运行 v2box apply && v2box restart 使配置生效[/dim]")
+        console.print("[dim]提示: 运行 v2box apply && v2box reload 使配置生效[/dim]")
 
 
 # ── auto: 自动模式 ────────────────────────────────────────────
@@ -387,7 +387,7 @@ def cmd_auto():
         if select_node_via_api("auto"):
             console.print("[green]✓[/green] 已通过 Clash API 切换到自动选择（立即生效）")
     else:
-        console.print("[dim]提示: 运行 v2box apply && v2box restart 使配置生效[/dim]")
+        console.print("[dim]提示: 运行 v2box apply && v2box reload 使配置生效[/dim]")
 
 
 # ── apply: 应用配置 ───────────────────────────────────────────
@@ -531,6 +531,21 @@ def cmd_stop():
     console.print(f"[green]✓[/green] {msg}" if ok else f"[red]✗[/red] {msg}")
 
 
+@cli.command("reload")
+def cmd_reload():
+    """热加载配置（SIGHUP，进程不断，零断连切换）。
+
+    \b
+    适用: apply/sub update 之后让新配置生效，比重启更快更稳。
+    """
+    ok, msg = service.reload()
+    if ok:
+        console.print(f"[green]✓[/green] {msg}")
+    else:
+        console.print(f"[red]✗[/red] {msg}")
+        console.print("[dim]当前平台不支持热加载，请用 v2box restart[/dim]")
+
+
 @cli.command("restart")
 def cmd_restart():
     """重启 sing-box 服务。
@@ -649,7 +664,7 @@ def cmd_lan(action, port):
             current_port = port
         console.print(f"[green]✓[/green] 局域网代理已关闭 (127.0.0.1:{current_port})")
 
-    console.print("[dim]提示: 运行 v2box apply && v2box restart 使配置生效[/dim]")
+    console.print("[dim]提示: 运行 v2box apply && v2box reload 使配置生效[/dim]")
 
 
 # ── port: 快捷设置端口 ────────────────────────────────────────
@@ -669,7 +684,7 @@ def cmd_port(port_num):
         return
     set_port(port_num)
     console.print(f"[green]✓[/green] 代理端口已设置为: {port_num}")
-    console.print("[dim]提示: 运行 v2box apply && v2box restart 使配置生效[/dim]")
+    console.print("[dim]提示: 运行 v2box apply && v2box reload 使配置生效[/dim]")
 
 
 # ── sub: 订阅管理 ──────────────────────────────────────────
@@ -793,7 +808,37 @@ def cmd_sub_update(name):
 
     if total_added:
         console.print(f"\n[bold green]完成！[/bold green] 共更新 {total_added} 个节点")
-        console.print("[dim]提示: 运行 v2box apply && v2box restart 使配置生效[/dim]")
+        console.print("[dim]提示: 运行 v2box apply && v2box reload 使配置生效[/dim]")
+
+
+@cmd_sub.command("auto")
+@click.argument("state_", required=False)
+@click.option("--hours", "hours_", type=int, default=None, help="刷新间隔小时数（默认 24）")
+def cmd_sub_auto(state_, hours_):
+    """订阅自动更新开关 — watchdog 守护进程按周期静默刷新订阅。
+
+    \b
+    示例:
+      v2box sub auto on           # 开启（每 24h 自动更新全部订阅+应用+reload）
+      v2box sub auto on --hours 6
+      v2box sub auto off
+    """
+    from v2box.core import store
+    state = store.load_state()
+    if state_ not in ("on", "off"):
+        en = state.get("sub_auto")
+        h = state.get("sub_auto_hours") or 24
+        console.print(f"订阅自动更新: {'[green]开[/green]' if en else '[dim]关[/dim]'} (间隔 {h}h)")
+        console.print("[dim]用法: v2box sub auto on|off [--hours N][/dim]")
+        return
+    en = state_ == "on"
+    store.set_sub_auto(en, hours_)
+    if en:
+        h = hours_ or state.get("sub_auto_hours") or 24
+        console.print(f"[green]✓[/green] 订阅自动更新已开启，每 {h}h 由看门狗静默刷新并应用")
+        console.print("[dim]需 v2box watchdog install 的常驻守护进程在跑[/dim]")
+    else:
+        console.print("[green]✓[/green] 订阅自动更新已关闭")
 
 
 @cmd_sub.command("ls")
@@ -1470,3 +1515,92 @@ def cmd_doctor(probe_domain):
 
 if __name__ == "__main__":
     cli()
+
+
+@cli.command("upgrade")
+@click.option("--yes", is_flag=True, help="跳过确认直接升级")
+def cmd_upgrade(yes):
+    """升级 sing-box 到最新正式版（下载 → 校验 → 安装 → 热加载）。
+
+    \b
+    上游修复（如接口翻转不自愈）通过升级 sing-box 二进制获取，
+    无需手动替换。只支持 Linux amd64。
+    """
+    import json as _json
+    import shutil as _sh
+    import tempfile as _tf
+    import urllib.request as _ur
+    from pathlib import Path as _P
+
+    if not _sh.which("sing-box"):
+        console.print("[red]✗[/red] 未安装 sing-box")
+        return
+    cur = subprocess.run(["sing-box", "version"], capture_output=True,
+                         text=True).stdout.split()[1] if True else "?"
+    console.print(f"当前版本: sing-box {cur}")
+
+    try:
+        with _ur.urlopen("https://api.github.com/repos/SagerNet/sing-box/releases/latest",
+                         timeout=15) as resp:
+            rel = _json.loads(resp.read())
+        tag = rel["tag_name"]
+        url = next(a["browser_download_url"] for a in rel["assets"]
+                   if "linux-amd64.tar.gz" in a["name"] and "pro" not in a["name"])
+    except Exception as e:
+        console.print(f"[red]✗[/red] 查询最新版本失败: {e}")
+        return
+    console.print(f"最新版本: {tag}")
+    if tag.lstrip("v") == cur.lstrip("v"):
+        console.print("[green]已是最新[/green]")
+        return
+    if not yes and not click.confirm("确认升级？"):
+        return
+
+    with _tf.TemporaryDirectory() as td:
+        tgz = _P(td) / "sb.tgz"
+        try:
+            _ur.urlretrieve(url, tgz)
+        except Exception as e:
+            console.print(f"[red]✗[/red] 下载失败: {e}")
+            return
+        subprocess.run(["tar", "xzf", str(tgz), "-C", td], check=True)
+        bin_path = next(_P(td).glob("sing-box-*/sing-box"))
+        # 新版本自检
+        r = subprocess.run([str(bin_path), "version"], capture_output=True, text=True)
+        if r.returncode != 0:
+            console.print("[red]✗[/red] 下载的二进制无法运行")
+            return
+        console.print(f"下载版本验证: {r.stdout.strip()}")
+        r = subprocess.run(["sudo", "install", "-m755", str(bin_path), "/usr/bin/sing-box"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            console.print(f"[red]✗[/red] 安装失败: {r.stderr.strip()}")
+            return
+    console.print(f"[green]✓[/green] sing-box 已升级到 {tag}")
+    ok, msg = service.reload()
+    console.print(("  [green]✓[/green] 已热加载" if ok else f"  [yellow]○[/yellow] reload: {msg}"))
+
+
+@cli.command("upgrade")
+def cmd_upgrade():
+    """升级 sing-box 二进制到最新 release（自动备份+失败回滚）。
+
+    \b
+    示例:
+      v2box upgrade
+    """
+    from v2box.core import updater
+    updater.upgrade(log=lambda m: console.print(f"  {m}"))
+
+
+@cli.command("rollback")
+def cmd_rollback():
+    """回滚到上一次 apply 前的配置（config.json.bak）。
+
+    \b
+    示例:
+      v2box rollback && v2box restart
+    """
+    from v2box.core import updater
+    ok, msg = updater.rollback_config(str(SINGBOX_CONFIG_PATH))
+    console.print(f"[green]✓[/green] {msg}" if ok else f"[red]✗[/red] {msg}")
