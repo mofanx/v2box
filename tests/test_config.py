@@ -81,7 +81,7 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(cfg["log"]["level"], "warn")
         self.assertEqual(cfg["outbounds"][0]["tag"], "proxy")
         self.assertEqual(cfg["outbounds"][1]["tag"], "auto")
-        self.assertTrue(cfg["outbounds"][1]["interrupt_exist_connections"])
+        self.assertFalse(cfg["outbounds"][1]["interrupt_exist_connections"])
         self.assertEqual(cfg["outbounds"][-1]["tag"], "direct")
         for rs in cfg["route"]["rule_set"]:
             self.assertEqual(rs["update_interval"], "24h")
