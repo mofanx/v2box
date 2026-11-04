@@ -145,6 +145,17 @@ def set_strict_route(enabled: bool | None):
     save_state(state)
 
 
+def set_mux(enabled: bool | None):
+    """设置节点 outbound multiplex 复用偏好（None = 恢复默认关闭）。
+
+    multiplex 需服务端支持 mux.cool；开启后多条连接复用单条隧道，
+    减少高并发场景握手开销。默认关闭，--mux 显式开启。
+    """
+    state = load_state()
+    state["mux"] = enabled
+    save_state(state)
+
+
 def remove_nodes_by_source(source: str) -> int:
     """删除指定来源的所有节点，返回删除数量。"""
     nodes = load_nodes()

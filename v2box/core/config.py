@@ -80,7 +80,8 @@ def build_config(outbounds: list[dict], mode: str = "auto",
                  selected: str | None = None, lan: bool = False,
                  port: int = MIXED_LISTEN_PORT,
                  download_detour: str | None = None,
-                 strict_route: bool | None = None) -> dict:
+                 strict_route: bool | None = None,
+                 mux: bool | None = None) -> dict:
     """根据节点列表生成完整 sing-box 配置。
 
     Args:
@@ -129,10 +130,22 @@ def build_config(outbounds: list[dict], mode: str = "auto",
         "default": default_out,
     }
 
+    node_obs = []
+    for ob in outbounds:
+        ob = dict(ob)
+        if mux and ob.get("type") != "direct" and "multiplex" not in ob:
+            ob["multiplex"] = {
+                "enabled": True,
+                "protocol": "smux",
+                "max_connections": 8,
+                "padding": False,
+            }
+        node_obs.append(ob)
+
     all_outbounds = [
         selector_group,
         urltest_group,
-        *outbounds,
+        *node_obs,
         {"type": "direct", "tag": "direct"},
     ]
 

@@ -124,19 +124,19 @@ def diagnose(probe_domain: str = DEFAULT_PROBE_DOMAIN,
     """
     from v2box.core import service
 
-    report = {
-        "verdict": HEALTHY,
-        "service_active": service.is_active(),
-        "clash_api": probe_clash_api(),
-        "dns_direct_ms": None,
-        "node_delay_ms": None,
-    }
+    # 三项无依赖的探针并行：is_active(systemd) + clash_api(HTTP) + dns(解析)
+    report = {"verdict": HEALTHY, "dns_direct_ms": None, "node_delay_ms": None}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_active = pool.submit(service.is_active)
+        f_api = pool.submit(probe_clash_api)
+        f_dns = pool.submit(probe_direct_dns, probe_domain)
+        report["service_active"] = f_active.result()
+        report["clash_api"] = f_api.result()
+        report["dns_direct_ms"] = f_dns.result()
 
     if not report["service_active"] and not report["clash_api"]:
         report["verdict"] = STOPPED
         return report
-
-    report["dns_direct_ms"] = probe_direct_dns(probe_domain)
 
     if report["dns_direct_ms"] is not None:
         if check_nodes:
