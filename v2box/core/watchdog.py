@@ -290,8 +290,6 @@ def run_loop(interval: int = 120, probe_domain: str | None = None):
                 log(f"verdict={v} action={act} "
                     f"dns={r['dns_direct_ms']}ms node={r['node_delay_ms']}ms "
                     f"{r['detail']}")
-            elif by_event:
-                log(f"链路事件探测: 正常 ({r['dns_direct_ms']}ms)")
         except Exception as e:
             log(f"探测异常: {e}")
         if by_event:
@@ -305,62 +303,70 @@ def _v2box_bin() -> str:
 
 
 def install_timer(interval_min: int = 2) -> tuple[bool, list[str]]:
-    """安装 systemd 定时器，每 interval_min 分钟执行一轮探测（仅 Linux/systemd）。"""
+    """安装 systemd 常驻看门狗服务（仅 Linux/systemd）。
+
+    常驻 run 模式替代 oneshot 定时器：探测间隔 interval_min 分钟 +
+    ip monitor 链路事件秒级触发；异常才打日志，journal 噪音趋零。
+    """
     msgs = []
     if sys.platform != "linux" or not shutil.which("systemctl"):
         return False, [
-            "当前平台不支持 systemd 定时器",
+            "当前平台不支持 systemd 服务",
             "替代方案: v2box watchdog run（前台常驻），"
             "或交给 launchd / Task Scheduler / supervisord 托管",
         ]
 
     unit_dir = Path("/etc/systemd/system")
     service_text = f"""[Unit]
-Description=v2box watchdog check — sing-box 链路僵死自愈
+Description=v2box watchdog — sing-box 链路僵死自愈
+After=network-online.target sing-box.service
 
 [Service]
-Type=oneshot
+ExecStart={_v2box_bin()} watchdog run --interval {interval_min * 60}
+Restart=always
+RestartSec=10s
 StateDirectory=v2box
-ExecStart={_v2box_bin()} watchdog check
-"""
-    timer_text = f"""[Unit]
-Description=v2box watchdog timer — 每 {interval_min} 分钟探测 sing-box 链路
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec={interval_min}min
 
 [Install]
-WantedBy=timers.target
+WantedBy=multi-user.target
 """
-    for name, text in ((f"{WATCHDOG_UNIT}.service", service_text),
-                       (f"{WATCHDOG_UNIT}.timer", timer_text)):
-        r = subprocess.run(["sudo", "tee", str(unit_dir / name)],
-                           input=text, capture_output=True, text=True)
-        if r.returncode != 0:
-            msgs.append(f"写入 {name} 失败: {r.stderr.strip()}")
-            return False, msgs
-        msgs.append(f"已写入 {unit_dir / name}")
+    p = unit_dir / f"{WATCHDOG_UNIT}.service"
+    r = subprocess.run(["sudo", "tee", str(p)],
+                       input=service_text, capture_output=True, text=True)
+    if r.returncode != 0:
+        msgs.append(f"写入 {p.name} 失败: {r.stderr.strip()}")
+        return False, msgs
+    msgs.append(f"已写入 {p}")
+
+    # 清理旧版 oneshot timer（升级路径）
+    timer = unit_dir / f"{WATCHDOG_UNIT}.timer"
+    if timer.exists():
+        subprocess.run(["sudo", "systemctl", "disable", "--now", timer.name],
+                       capture_output=True, text=True)
+        subprocess.run(["sudo", "rm", "-f", str(timer)],
+                       capture_output=True, text=True)
+        msgs.append("已移除旧版 timer 单元")
 
     for cmd in (["sudo", "systemctl", "daemon-reload"],
-                ["sudo", "systemctl", "enable", "--now", f"{WATCHDOG_UNIT}.timer"]):
+                ["sudo", "systemctl", "enable", "--now", f"{WATCHDOG_UNIT}.service"]):
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             msgs.append(f"{' '.join(cmd[2:])} 失败: {r.stderr.strip()}")
             return False, msgs
-    msgs.append(f"已启用 {WATCHDOG_UNIT}.timer")
+    msgs.append(f"已启用 {WATCHDOG_UNIT}.service（常驻模式）")
     return True, msgs
 
 
 def uninstall_timer() -> tuple[bool, list[str]]:
-    """卸载看门狗定时器。"""
+    """卸载看门狗服务（含旧版 timer 单元）。"""
     msgs = []
     if sys.platform != "linux" or not shutil.which("systemctl"):
-        return False, ["当前平台不支持 systemd 定时器"]
-    r = subprocess.run(["sudo", "systemctl", "disable", "--now",
-                        f"{WATCHDOG_UNIT}.timer"], capture_output=True, text=True)
-    if r.returncode == 0:
-        msgs.append("已停用定时器")
+        return False, ["当前平台不支持 systemd 服务"]
+    for unit in (f"{WATCHDOG_UNIT}.service", f"{WATCHDOG_UNIT}.timer"):
+        r = subprocess.run(["sudo", "systemctl", "disable", "--now", unit],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            msgs.append(f"已停用 {unit}")
     for name in (f"{WATCHDOG_UNIT}.timer", f"{WATCHDOG_UNIT}.service"):
         p = Path("/etc/systemd/system") / name
         if p.exists():
@@ -401,9 +407,12 @@ def timer_status() -> tuple[bool, str]:
     """定时器是否激活。"""
     if sys.platform != "linux" or not shutil.which("systemctl"):
         return False, "非 systemd 平台"
-    r = subprocess.run(["systemctl", "is-active", f"{WATCHDOG_UNIT}.timer"],
-                       capture_output=True, text=True)
-    return r.stdout.strip() == "active", r.stdout.strip()
+    for unit in (f"{WATCHDOG_UNIT}.service", f"{WATCHDOG_UNIT}.timer"):
+        r = subprocess.run(["systemctl", "is-active", unit],
+                           capture_output=True, text=True)
+        if r.stdout.strip() == "active":
+            return True, unit
+    return False, r.stdout.strip()
 
 
 # ── 网络变更钩子（可选加速层）─────────────────────────────────
