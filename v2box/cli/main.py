@@ -457,9 +457,18 @@ def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour
 
     target = Path(output) if output else SINGBOX_CONFIG_PATH
 
+    import subprocess
+    backup = target.with_suffix(target.suffix + ".bak")
+    if target.exists():
+        if str(target).startswith("/etc/"):
+            subprocess.run(["sudo", "cp", str(target), str(backup)],
+                           capture_output=True)
+        else:
+            import shutil as _shutil
+            _shutil.copy2(target, backup)
+
     # 写入系统路径需要 sudo
     if not output and str(target).startswith("/etc/"):
-        import subprocess
         import json
         json_str = config_to_json(config)
         result = subprocess.run(
@@ -482,6 +491,14 @@ def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour
         console.print(f"[green]✓[/green] {msg}")
     else:
         console.print(f"[red]✗[/red] {msg}")
+        if backup.exists():
+            if str(target).startswith("/etc/"):
+                subprocess.run(["sudo", "cp", str(backup), str(target)],
+                               capture_output=True)
+            else:
+                import shutil as _shutil
+                _shutil.copy2(backup, target)
+            console.print(f"[yellow]已自动回滚到 {backup}，坏配置未残留[/yellow]")
 
 
 # ── start / stop / restart / status ──────────────────────────
