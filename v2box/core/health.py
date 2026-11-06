@@ -89,6 +89,29 @@ def probe_node_delay(timeout_ms: int = 8000) -> int | None:
     return delay if delay and delay > 0 else None
 
 
+def probe_any_node_delay(max_try: int = 3,
+                         timeout_ms: int = 5000) -> int | None:
+    """抽测 auto 组内其他节点：当前节点抖动时兜底，避免单点误报 NODES_DEAD。
+
+    任一节点响应即返回其延迟 ms；全部失败返回 None。
+    """
+    data = _api_get("/proxies/auto", timeout=5)
+    if not data:
+        return None
+    all_tags = [t for t in data.get("all", [])
+                if t not in ("auto", "proxy", "direct")]
+    if not all_tags:
+        return None
+    url = urllib.parse.quote("https://cp.cloudflare.com/generate_204", safe="")
+    for tag in all_tags[:max_try]:
+        t = urllib.parse.quote(tag, safe="")
+        r = _api_get(f"/proxies/{t}/delay?url={url}&timeout={timeout_ms}",
+                     timeout=timeout_ms / 1000 + 2)
+        if r and r.get("delay") and r["delay"] > 0:
+            return r["delay"]
+    return None
+
+
 def cache_db_hint() -> str | None:
     """cache.db 属主与服务用户不一致时给出修复提示（Linux/systemd）。
 
@@ -142,8 +165,13 @@ def diagnose(probe_domain: str = DEFAULT_PROBE_DOMAIN,
         if check_nodes:
             report["node_delay_ms"] = probe_node_delay()
             if report["node_delay_ms"] is None:
-                # direct 通、代理链路死 —— 重启大概率无用
-                report["verdict"] = NODES_DEAD
+                # 单节点抖动兜底：抽测池内其他节点，有活节点则仍算健康
+                alt = probe_any_node_delay()
+                if alt is not None:
+                    report["node_delay_ms"] = alt
+                else:
+                    # direct 通、整个代理池死 —— 重启大概率无用
+                    report["verdict"] = NODES_DEAD
         return report
 
     # DNS 链路死：进一步区分是进程僵死还是通道僵死
