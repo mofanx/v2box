@@ -111,7 +111,7 @@ def build_config(outbounds: list[dict], mode: str = "auto",
         "tag": "auto",
         "outbounds": tags,
         "url": "https://cp.cloudflare.com/generate_204",
-        "interval": "5m",
+        "interval": "2m",
         "tolerance": 50,
         # false：不掐断存量连接，新连接走更优节点 —— 避免每 5min 测速
         # 换节点时正在进行的流量被强杀（网页/视频周期性断连）
@@ -300,7 +300,7 @@ def update_nodes_in_config(user_config: dict, nodes: list[dict], mode: str = "au
         detour = selected
     else:
         detour = "direct"
-    urltest_group = {"type": "urltest", "tag": "auto", "outbounds": tags, "url": "https://cp.cloudflare.com/generate_204", "interval": "5m", "tolerance": 50, "interrupt_exist_connections": False}
+    urltest_group = {"type": "urltest", "tag": "auto", "outbounds": tags, "url": "https://cp.cloudflare.com/generate_204", "interval": "2m", "tolerance": 50, "interrupt_exist_connections": False}
     default_out = "auto"
     if mode == "manual" and selected and selected in tags:
         default_out = selected

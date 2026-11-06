@@ -185,6 +185,16 @@ def check_once(probe_domain: str | None = None, dry_run: bool = False,
         return result
 
     if report["verdict"] == health.NODES_DEAD:
+        # 单次探测失败在慢节点上常见（5s 窗口内偶发超时），复探一次再定性
+        retry = health.probe_node_delay()
+        if retry is not None:
+            state["fail_count"] = 0
+            state["last_verdict"] = health.HEALTHY
+            _save_state(state)
+            result["verdict"] = health.HEALTHY
+            result["node_delay_ms"] = retry
+            result["detail"] = "节点探测复验通过，判定为瞬时抖动"
+            return result
         state["fail_count"] = 0
         _save_state(state)
         result["detail"] = "DNS 通但代理链路死，重启无意义（需检查节点/订阅）"

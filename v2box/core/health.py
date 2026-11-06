@@ -78,7 +78,7 @@ def probe_direct_dns(domain: str = DEFAULT_PROBE_DOMAIN,
             return None
 
 
-def probe_node_delay(timeout_ms: int = 5000) -> int | None:
+def probe_node_delay(timeout_ms: int = 8000) -> int | None:
     """通过 Clash API 测当前生效节点的延迟，区分节点死与通道死。"""
     url = urllib.parse.quote("https://cp.cloudflare.com/generate_204", safe="")
     data = _api_get(f"/proxies/proxy/delay?url={url}&timeout={timeout_ms}",
