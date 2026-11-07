@@ -331,6 +331,7 @@ def _maybe_update_subs(log):
                 port=st.get("port") or MIXED_LISTEN_PORT,
                 strict_route=st.get("strict_route"),
                 mux=st.get("mux"),
+                pin_ip=st.get("pin_ip"),
             )
             ok, msg = service.reload()
             log(f"订阅更新应用{changed}节点, reload={'ok' if ok else msg[:80]}")

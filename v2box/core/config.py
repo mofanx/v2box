@@ -41,15 +41,47 @@ def _node_server_domains(outbounds: list[dict]) -> list[str]:
     return domains
 
 
+def resolve_node_ips(domains: list[str]) -> dict[str, list[str]]:
+    """解析节点域名为 IP 列表（apply 时固化，免疫域名侧波动）。"""
+    import socket
+    out: dict[str, list[str]] = {}
+    for d in domains:
+        try:
+            infos = socket.getaddrinfo(d, 443, proto=socket.IPPROTO_TCP)
+            ips = sorted({i[4][0] for i in infos})
+            if ips:
+                out[d] = ips
+        except OSError:
+            continue
+    return out
+
+
+def _predefined_dns_rule(pin_map: dict[str, list[str]]) -> dict | None:
+    """把节点域名固定到已解析 IP —— predefined 应答，绕过运行时解析。"""
+    answers = [f"{d}. A {ip}" for d, ips in pin_map.items()
+               for ip in ips if ":" not in ip]
+    answers += [f"{d}. AAAA {ip}" for d, ips in pin_map.items()
+                for ip in ips if ":" in ip]
+    if not answers:
+        return None
+    return {"domain": sorted(pin_map), "action": "predefined",
+            "answer": answers}
+
+
 def _dns_rules(node_domains: list[str] | None = None,
-               extra_rules: list[dict] | None = None) -> list[dict]:
-    """生成 DNS 规则：本地域拒绝 → 节点域名直连 → geosite-cn → 自定义规则。"""
+               extra_rules: list[dict] | None = None,
+               pin_map: dict[str, list[str]] | None = None) -> list[dict]:
+    """生成 DNS 规则：本地域拒绝 → 节点域名直连/固定 → geosite-cn → 自定义规则。"""
     rules = [
         {"domain_suffix": LOCAL_DOMAIN_SUFFIXES,
          "action": "reject", "rcode": "NAME_ERROR"},
         {"rule_set": "geosite-cn", "server": "dns-direct"},
     ]
     if node_domains:
+        if pin_map:
+            rule = _predefined_dns_rule(pin_map)
+            if rule:
+                rules.append(rule)
         rules.append({"domain_suffix": node_domains, "server": "dns-direct"})
     if extra_rules:
         rules.extend(extra_rules)
@@ -81,7 +113,8 @@ def build_config(outbounds: list[dict], mode: str = "auto",
                  port: int = MIXED_LISTEN_PORT,
                  download_detour: str | None = None,
                  strict_route: bool | None = None,
-                 mux: bool | None = None) -> dict:
+                 mux: bool | None = None,
+                 pin_ip: bool | None = None) -> dict:
     """根据节点列表生成完整 sing-box 配置。
 
     Args:
@@ -167,7 +200,9 @@ def build_config(outbounds: list[dict], mode: str = "auto",
                     "server": "223.5.5.5",
                 },
             ],
-            "rules": _dns_rules(node_domains),
+            "rules": _dns_rules(
+                node_domains,
+                pin_map=(resolve_node_ips(node_domains) if pin_ip else None)),
             "final": "dns-proxy",
             "strategy": "ipv4_only",
             "independent_cache": True,
@@ -252,7 +287,8 @@ def save_user_config(config: dict) -> Path:
     return USER_CONFIG_PATH
 
 def _harden_user_config(user_config: dict, outbounds: list[dict],
-                        strict_route: bool | None = None):
+                        strict_route: bool | None = None,
+                        pin_map: dict[str, list[str]] | None = None):
     """对用户自定义配置应用安全加固（保留用户自定义项的前提下）。
 
     - tun 栈统一为 system（mixed 的 gVisor UDP 在网卡抖动后更易僵死）
@@ -282,16 +318,22 @@ def _harden_user_config(user_config: dict, outbounds: list[dict],
         dns_rules.insert(0, {"domain_suffix": LOCAL_DOMAIN_SUFFIXES,
                              "action": "reject", "rcode": "NAME_ERROR"})
     node_domains = _node_server_domains(outbounds)
+    dns_rules[:] = [r for r in dns_rules if r.get("action") != "predefined"]
+    if pin_map:
+        rule = _predefined_dns_rule(pin_map)
+        if rule:
+            dns_rules.insert(1, rule)
     if node_domains and not any("domain_suffix" in r and r.get("server") == "dns-direct"
                                 and set(node_domains) & set(r["domain_suffix"])
                                 for r in dns_rules):
-        dns_rules.insert(1, {"domain_suffix": node_domains, "server": "dns-direct"})
+        dns_rules.insert(1 if not pin_map else 2,
+                        {"domain_suffix": node_domains, "server": "dns-direct"})
     for rule_set in user_config.get("route", {}).get("rule_set", []):
         if rule_set.get("type") == "remote" and "update_interval" not in rule_set:
             rule_set["update_interval"] = "24h"
 
 
-def update_nodes_in_config(user_config: dict, nodes: list[dict], mode: str = "auto", selected: str | None = None, lan: bool = False, port: int = MIXED_LISTEN_PORT, download_detour: str | None = None, strict_route: bool | None = None) -> dict:
+def update_nodes_in_config(user_config: dict, nodes: list[dict], mode: str = "auto", selected: str | None = None, lan: bool = False, port: int = MIXED_LISTEN_PORT, download_detour: str | None = None, strict_route: bool | None = None, pin_map: dict[str, list[str]] | None = None) -> dict:
     outbounds = [{k: v for k, v in o.items() if not k.startswith("_")} for o in nodes]
     tags = [o["tag"] for o in outbounds]
     if download_detour:
@@ -318,21 +360,24 @@ def update_nodes_in_config(user_config: dict, nodes: list[dict], mode: str = "au
         for rule_set in user_config["route"]["rule_set"]:
             if rule_set.get("type") == "remote":
                 rule_set["download_detour"] = detour
-    _harden_user_config(user_config, outbounds, strict_route=strict_route)
+    _harden_user_config(user_config, outbounds, strict_route=strict_route,
+                        pin_map=pin_map)
     return user_config
 
-def apply_config(nodes: list[dict], mode: str = "auto", selected: str | None = None, lan: bool = False, port: int = MIXED_LISTEN_PORT, download_detour: str | None = None, strict_route: bool | None = None, mux: bool | None = None) -> dict:
+def apply_config(nodes: list[dict], mode: str = "auto", selected: str | None = None, lan: bool = False, port: int = MIXED_LISTEN_PORT, download_detour: str | None = None, strict_route: bool | None = None, mux: bool | None = None, pin_ip: bool | None = None) -> dict:
     if mux:
         _mx = {"enabled": True, "protocol": "smux", "max_connections": 8, "padding": False}
         nodes = [dict(n, multiplex=_mx)
                  if n.get("type") != "direct" and "multiplex" not in n else n
                  for n in nodes]
+    pin_map = (resolve_node_ips(_node_server_domains(nodes))
+               if pin_ip else None)
     user_config = load_user_config()
     if user_config is None:
-        config = build_config(nodes, mode=mode, selected=selected, lan=lan, port=port, download_detour=download_detour, strict_route=strict_route)
+        config = build_config(nodes, mode=mode, selected=selected, lan=lan, port=port, download_detour=download_detour, strict_route=strict_route, pin_ip=pin_ip)
         save_user_config(config)
     else:
-        config = update_nodes_in_config(user_config, nodes, mode=mode, selected=selected, lan=lan, port=port, download_detour=download_detour, strict_route=strict_route)
+        config = update_nodes_in_config(user_config, nodes, mode=mode, selected=selected, lan=lan, port=port, download_detour=download_detour, strict_route=strict_route, pin_map=pin_map)
         save_user_config(config)
     return config
 

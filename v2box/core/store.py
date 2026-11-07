@@ -156,6 +156,17 @@ def set_mux(enabled: bool | None):
     save_state(state)
 
 
+def set_pin_ip(enabled: bool | None):
+    """节点域名预解析固化偏好（None = 恢复默认关闭）。
+
+    开启后 apply 时把节点域名解析成 IP 写入 DNS predefined 规则，
+    免疫域名侧 DNS 波动/超时；域名换 IP 需重新 apply 生效。
+    """
+    state = load_state()
+    state["pin_ip"] = enabled
+    save_state(state)
+
+
 def remove_nodes_by_source(source: str) -> int:
     """删除指定来源的所有节点，返回删除数量。"""
     nodes = load_nodes()
