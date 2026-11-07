@@ -391,11 +391,13 @@ def install_timer(interval_min: int = 2) -> tuple[bool, list[str]]:
         ]
 
     unit_dir = Path("/etc/systemd/system")
+    from v2box.core import store as _st
     service_text = f"""[Unit]
 Description=v2box watchdog — sing-box 链路僵死自愈
 After=network-online.target sing-box.service
 
 [Service]
+Environment=V2BOX_DATA_DIR={_st.DATA_DIR}
 ExecStart={_v2box_bin()} watchdog run --interval {interval_min * 60}
 Restart=always
 RestartSec=10s
