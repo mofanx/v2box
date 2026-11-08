@@ -364,7 +364,11 @@ def update_nodes_in_config(user_config: dict, nodes: list[dict], mode: str = "au
                         pin_map=pin_map)
     return user_config
 
-def apply_config(nodes: list[dict], mode: str = "auto", selected: str | None = None, lan: bool = False, port: int = MIXED_LISTEN_PORT, download_detour: str | None = None, strict_route: bool | None = None, mux: bool | None = None, pin_ip: bool | None = None) -> dict:
+def apply_config(nodes: list[dict], mode: str = "auto", selected: str | None = None, lan: bool = False, port: int = MIXED_LISTEN_PORT, download_detour: str | None = None, strict_route: bool | None = None, mux: bool | None = None, pin_ip: bool | None = None, tfo: bool | None = None) -> dict:
+    if tfo:
+        nodes = [dict(n, tcp_fast_open=True)
+                 if n.get("type") != "direct" and "tcp_fast_open" not in n else n
+                 for n in nodes]
     if mux:
         _mx = {"enabled": True, "protocol": "smux", "max_connections": 8, "padding": False}
         nodes = [dict(n, multiplex=_mx)

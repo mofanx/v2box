@@ -297,3 +297,14 @@ def set_sub_auto(enabled: bool | None, hours: int | None = None):
     if hours is not None:
         state["sub_auto_hours"] = hours
     save_state(state)
+
+
+def set_tfo(enabled: bool | None):
+    """节点 outbound TCP Fast Open 偏好（None = 恢复默认关闭）。
+
+    TFO 在 TCP 握手中携带数据，高延迟节点可省一个 RTT；
+    需要内核和服务端都支持，默认关闭，--tfo 显式开启。
+    """
+    state = load_state()
+    state["tfo"] = enabled
+    save_state(state)

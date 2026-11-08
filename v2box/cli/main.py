@@ -24,7 +24,7 @@ from v2box import __version__
 from v2box.parsers import parse_link, supported_protocols
 from v2box.core.store import (
     load_nodes, add_nodes, remove_node, clear_nodes,
-    load_state, set_selected_node, set_mode, set_lan, set_port, set_strict_route, set_mux, set_pin_ip,
+    load_state, set_selected_node, set_mode, set_lan, set_port, set_strict_route, set_mux, set_pin_ip, set_tfo,
     load_subs, add_sub, remove_sub, update_sub_meta,
     remove_nodes_by_source,
 )
@@ -403,7 +403,8 @@ def cmd_auto():
 @click.option("--strict-route/--no-strict-route", "strict_route", default=None, help="启用/关闭 TUN strict_route（默认启用；网络频繁漫游可用 --no-strict-route 降低失效面，设置会被记住）")
 @click.option("--mux/--no-mux", "mux", default=None, help="启用/关闭节点 multiplex 连接复用（需服务端支持 mux.cool；高并发减少握手开销，设置会被记住）")
 @click.option("--pin-ip/--no-pin-ip", "pin_ip", default=None, help="启用/关闭节点域名预解析固化（免疫域名 DNS 波动；域名换 IP 需重新 apply，设置会被记住）")
-def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour, strict_route, mux, pin_ip):
+@click.option("--tfo/--no-tfo", "tfo", default=None, help="启用/关闭 TCP Fast Open（高延迟节点握手省 1 RTT；需内核+服务端支持，设置会被记住）")
+def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour, strict_route, mux, pin_ip, tfo):
     """根据已导入的节点生成并应用 sing-box 配置。
 
     \b
@@ -443,13 +444,17 @@ def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour
     if pin_ip is not None:
         set_pin_ip(pin_ip)
     resolved_pin = pin_ip if pin_ip is not None else state.get("pin_ip")
+    if tfo is not None:
+        set_tfo(tfo)
+    resolved_tfo = tfo if tfo is not None else state.get("tfo")
 
     config = apply_config(nodes, mode=mode, selected=selected,
                           lan=use_lan, port=use_port,
                           download_detour=download_detour,
                           strict_route=resolved_strict,
                           mux=resolved_mux,
-                          pin_ip=resolved_pin)
+                          pin_ip=resolved_pin,
+                          tfo=resolved_tfo)
 
     # 移除 TUN
     if no_tun:
