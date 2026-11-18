@@ -92,7 +92,7 @@ jobs:
           Expand-Archive sing-box.zip -DestinationPath sb
           Copy-Item sb\sing-box-*-windows-amd64\sing-box.exe sb\
           echo "$PWD\sb" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          sing-box version
+          .\sb\sing-box.exe version
       - name: Generate config + sing-box check
         shell: pwsh
         run: |
