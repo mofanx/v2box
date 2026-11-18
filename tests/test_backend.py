@@ -58,7 +58,7 @@ def test_windows_config_path_fallback_user(monkeypatch, tmp_path):
 
 
 def test_windows_install_service_cmd(monkeypatch):
-    """install_service 生成正确的 sc create 命令。"""
+    """install_service 生成 ONSTART+SYSTEM 计划任务（sing-box 无 SCM 协议，不能用 sc）。"""
     calls = []
     monkeypatch.setattr(backend, "_run",
                         lambda cmd, **k: calls.append(cmd)
@@ -70,9 +70,10 @@ def test_windows_install_service_cmd(monkeypatch):
     ok, _ = b.install_service(r"C:\ProgramData\sing-box\config.json")
     assert ok
     cmd = calls[0]
-    assert cmd[:3] == ["sc", "create", "sing-box"]
-    assert any("sing-box.exe" in a and "run" in a and "-c" in a for a in cmd)
-    assert "start=" in cmd and "auto" in cmd
+    assert cmd[:4] == ["schtasks", "/create", "/f", "/tn"]
+    assert "onstart" in cmd and "SYSTEM" in cmd
+    tr = cmd[cmd.index("/tr") + 1]
+    assert "sing-box.exe" in tr and "run -c" in tr and "config.json" in tr
 
 
 def test_windows_uninstall_service_cmd(monkeypatch):
@@ -86,7 +87,27 @@ def test_windows_uninstall_service_cmd(monkeypatch):
     b = backend.WindowsBackend()
     ok, _ = b.uninstall_service()
     assert ok
-    assert calls[0][:3] == ["sc", "delete", "sing-box"]
+    assert calls[0][:4] == ["schtasks", "/delete", "/f", "/tn"]
+
+
+def test_windows_status_parses_task_state(monkeypatch):
+    """status 解析 schtasks csv 输出的 Running 状态。"""
+    csv = '"RUNNER","sing-box","N/A","Running"\r\n'
+    monkeypatch.setattr(backend, "_run",
+                        lambda cmd, **k: backend.subprocess.CompletedProcess(
+                            cmd, 0, csv, ""))
+    b = backend.WindowsBackend()
+    running, _ = b.status()
+    assert running is True
+
+
+def test_windows_status_not_installed(monkeypatch):
+    monkeypatch.setattr(backend, "_run",
+                        lambda cmd, **k: backend.subprocess.CompletedProcess(
+                            cmd, 1, "", "ERROR"))
+    b = backend.WindowsBackend()
+    running, _ = b.status()
+    assert running is False
 
 
 def test_systemd_install_service_writes_unit(monkeypatch):

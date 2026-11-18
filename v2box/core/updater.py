@@ -140,6 +140,32 @@ def _install_target(plat: str) -> str:
     return "/usr/local/bin/sing-box"
 
 
+def _ensure_on_path(dir_path: str, plat: str, log=print) -> None:
+    """Windows：把安装目录写入 PATH（管理员→Machine；普通→User，注册表级，新终端生效）。
+    CI 环境额外追加到 GITHUB_PATH 让后续步骤可见。"""
+    if plat != "windows":
+        return
+    scope = "Machine" if backend.is_admin() else "User"
+    ps = (
+        f'$p=[Environment]::GetEnvironmentVariable("Path","{scope}");'
+        f'if($p -notlike "*{dir_path}*"){{'
+        f'[Environment]::SetEnvironmentVariable("Path","$p;{dir_path}","{scope}")}}'
+    )
+    r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        log(f"已将 {dir_path} 写入 {scope} PATH（新开终端生效）")
+    else:
+        log(f"提示: 请手动将 {dir_path} 加入 PATH")
+    gh_path = os.environ.get("GITHUB_PATH")
+    if gh_path:
+        try:
+            with open(gh_path, "a", encoding="utf-8") as f:
+                f.write(dir_path + "\n")
+        except OSError:
+            pass
+
+
 def install(log=print, with_service: bool = False) -> bool:
     """首次安装 sing-box 二进制。已安装返回 False 并提示走 upgrade。"""
     existing = shutil.which("sing-box")
@@ -183,8 +209,7 @@ def install(log=print, with_service: bool = False) -> bool:
                 log(f"✗ 安装失败: {r.stderr.strip()}")
                 return False
     log(f"✓ sing-box {tag} 已安装到 {target}")
-    if plat == "windows" and not backend.is_admin():
-        log(f"提示: 请将 {os.path.dirname(target)} 加入 PATH 后使用")
+    _ensure_on_path(os.path.dirname(target), plat, log)
 
     if with_service:
         cfg = str(backend.default_config_path())

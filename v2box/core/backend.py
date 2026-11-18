@@ -387,27 +387,41 @@ class LaunchdBackend(ServiceBackend):
 
 
 class WindowsBackend(ServiceBackend):
-    """Windows 服务后端（适配实现，未真机验证，依赖 sing-box 已注册为 Windows 服务）。"""
+    """Windows 服务后端 — 用 schtasks ONSTART+SYSTEM 任务模拟系统服务。
+
+    sing-box 是不实现 SCM 协议的普通 exe，sc create 能注册但 net start
+    永远起不来（"did not respond to the start or control request"）。
+    因此生命周期委托给计划任务：ONSTART 触发器 = 开机自启，
+    schtasks /run|/end|/query 对应 start|stop|status。
+    """
 
     name = "windows-service"
-    SERVICE = "sing-box"
-    TASK_NAME = "v2box-daemon"
+    SERVICE = "sing-box"        # 守护任务名
+    TASK_NAME = "v2box-daemon"  # watchdog 任务名
 
-    def _query_state(self) -> str:
-        r = _run(["sc", "query", self.SERVICE])
-        return r.stdout
+    def _task_state(self) -> str:
+        """返回计划任务状态（Running/Ready/Disabled），未注册返回空串。"""
+        r = _run(["schtasks", "/query", "/tn", self.SERVICE,
+                  "/fo", "csv", "/nh"])
+        if r.returncode != 0:
+            return ""
+        for line in r.stdout.splitlines():
+            parts = [p.strip().strip('"') for p in line.split('","')]
+            if len(parts) >= 4:
+                return parts[-1]
+        return ""
 
     def status(self) -> tuple[bool, str]:
-        out = self._query_state()
-        return "RUNNING" in out, out.strip()
+        st = self._task_state()
+        return st.lower() == "running", f"task {self.SERVICE}: {st or '未注册'}"
 
     def start(self) -> tuple[bool, str]:
-        r = _run(["net", "start", self.SERVICE])
-        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip()
+        r = _run(["schtasks", "/run", "/tn", self.SERVICE])
+        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip() or "已启动"
 
     def stop(self) -> tuple[bool, str]:
-        r = _run(["net", "stop", self.SERVICE])
-        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip()
+        r = _run(["schtasks", "/end", "/tn", self.SERVICE])
+        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip() or "已停止"
 
     def restart(self) -> tuple[bool, str]:
         ok1, msg1 = self.stop()
@@ -415,12 +429,12 @@ class WindowsBackend(ServiceBackend):
         return ok2, msg2 if ok2 else f"stop: {msg1}\nstart: {msg2}"
 
     def enable(self) -> tuple[bool, str]:
-        r = _run(["sc", "config", self.SERVICE, "start=", "auto"])
-        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip()
+        r = _run(["schtasks", "/change", "/tn", self.SERVICE, "/enable"])
+        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip() or "已设置开机自启"
 
     def disable(self) -> tuple[bool, str]:
-        r = _run(["sc", "config", self.SERVICE, "start=", "demand"])
-        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip()
+        r = _run(["schtasks", "/change", "/tn", self.SERVICE, "/disable"])
+        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip() or "已取消开机自启"
 
     def install_service(self, config_path: str) -> tuple[bool, str]:
         exe = shutil.which("sing-box")
@@ -428,21 +442,20 @@ class WindowsBackend(ServiceBackend):
             return False, "未找到 sing-box 可执行文件"
         if not is_admin():
             return False, "注册服务需要管理员权限（右键→以管理员身份运行终端）"
-        bin_path = f'"{exe}" run -c "{config_path}"'
-        r = _run(["sc", "create", self.SERVICE, f"binPath={bin_path}",
-                  "start=", "auto"])
+        r = _run(["schtasks", "/create", "/f", "/tn", self.SERVICE,
+                  "/sc", "onstart", "/ru", "SYSTEM", "/rl", "highest",
+                  "/tr", f'"{exe}" run -c "{config_path}"'])
         if r.returncode != 0:
             return False, r.stderr.strip() or r.stdout.strip()
-        _run(["sc", "description", self.SERVICE,
-              "sing-box proxy service (managed by v2box)"])
-        return True, f"sing-box 已注册为 Windows 服务（{self.SERVICE}）"
+        return True, (f"sing-box 已注册为开机启动任务（{self.SERVICE}，SYSTEM 账户）"
+                      "——v2box start 启动")
 
     def uninstall_service(self) -> tuple[bool, str]:
         if not is_admin():
             return False, "卸载服务需要管理员权限（右键→以管理员身份运行终端）"
         self.stop()
-        r = _run(["sc", "delete", self.SERVICE])
-        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip() or "sing-box 服务已卸载"
+        r = _run(["schtasks", "/delete", "/f", "/tn", self.SERVICE])
+        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip() or "sing-box 任务已卸载"
 
     def install_watchdog(self, v2box_bin: str, interval: int = 60) -> tuple[bool, str]:
         # schtasks 最小粒度为 1 分钟

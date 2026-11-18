@@ -211,6 +211,43 @@ def test_install_flow_windows_user_dir(tmp_path, monkeypatch):
     assert any("已安装到" in m for m in logs)
 
 
+def test_ensure_on_path_admin_machine_scope(tmp_path, monkeypatch):
+    """Windows 管理员 → 写 Machine PATH + GITHUB_PATH 文件。"""
+    calls = []
+    monkeypatch.setattr(backend, "is_admin", lambda: True)
+    monkeypatch.setattr(updater.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd)
+                        or updater.subprocess.CompletedProcess(cmd, 0, "", ""))
+    gh_path = tmp_path / "github_path"
+    monkeypatch.setenv("GITHUB_PATH", str(gh_path))
+    logs = []
+    updater._ensure_on_path(r"C:\ProgramData\sing-box", "windows", log=logs.append)
+    ps = next(c for c in calls if c[0] == "powershell")
+    assert "Machine" in ps[-1] and "ProgramData" in ps[-1]
+    assert "sing-box" in gh_path.read_text()
+
+
+def test_ensure_on_path_nonadmin_user_scope(monkeypatch):
+    monkeypatch.setattr(backend, "is_admin", lambda: False)
+    calls = []
+    monkeypatch.setattr(updater.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd)
+                        or updater.subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.delenv("GITHUB_PATH", raising=False)
+    updater._ensure_on_path(r"C:\u\AppData\Local\Programs\sing-box", "windows")
+    ps = next(c for c in calls if c[0] == "powershell")
+    assert '"User"' in ps[-1]
+
+
+def test_ensure_on_path_skips_posix(monkeypatch):
+    calls = []
+    monkeypatch.setattr(updater.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd)
+                        or updater.subprocess.CompletedProcess(cmd, 0, "", ""))
+    updater._ensure_on_path("/usr/local/bin", "linux")
+    assert calls == []
+
+
 def test_install_flow_linux_sudo_install(tmp_path, monkeypatch):
     """Linux 端到端：下载 tar.gz → sudo install 到 /usr/local/bin。"""
     monkeypatch.setattr(updater.shutil, "which", lambda n: None)

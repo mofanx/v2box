@@ -100,3 +100,46 @@ jobs:
           v2box add "vless://00000000-0000-0000-0000-000000000000@node1.example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws#ci-ws-node"
           v2box apply -o ci-config.json
           sing-box check -c ci-config.json
+
+  windows-e2e:
+    name: windows e2e (install/service/watchdog)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install v2box
+        run: pip install -e . pytest
+      - name: v2box install (real download + PATH)
+        shell: pwsh
+        run: |
+          v2box install
+          C:\ProgramData\sing-box\sing-box.exe version
+      - name: apply + service + watchdog + clash api
+        shell: pwsh
+        run: |
+          $env:V2BOX_DATA_DIR = "$PWD\.ci-data"
+          v2box add "vless://00000000-0000-0000-0000-000000000000@node1.example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws#ci-ws-node"
+          v2box apply --no-tun
+          v2box service install
+          schtasks /query /tn sing-box
+          v2box start
+          Start-Sleep 3
+          schtasks /query /tn sing-box /fo csv /nh
+          $ok = $false
+          1..10 | ForEach-Object {
+            if (curl.exe -sf http://127.0.0.1:9090/version -H "Authorization: Bearer v2box") { $ok = $true; break }
+            Start-Sleep 2
+          }
+          if (-not $ok) { throw "clash api 9090 未就绪" }
+          v2box watchdog install
+          schtasks /query /tn v2box-daemon
+      - name: cleanup
+        if: always()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          v2box watchdog uninstall
+          v2box stop
+          v2box service uninstall
