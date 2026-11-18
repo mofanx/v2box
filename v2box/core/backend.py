@@ -19,6 +19,22 @@ def _run(cmd: list[str], check: bool = False, **kw) -> subprocess.CompletedProce
     return subprocess.run(cmd, capture_output=True, text=True, check=check, **kw)
 
 
+def _resolve_binary(exe: str) -> str:
+    """包管理器 shim → 真实二进制路径。
+
+    scoop 的 ~\\scoop\\shims\\sing-box.exe 是启动器壳（真身在
+    apps\\sing-box\\current\\），服务/计划任务场景直接用真身更可靠；
+    真身不存在或非 shim 路径时原样返回。
+    """
+    norm = exe.replace("/", "\\").lower()
+    if "\\scoop\\shims\\" in norm:
+        real = (Path(exe).parent.parent / "apps" / "sing-box"
+                / "current" / Path(exe).name)
+        if real.exists():
+            return str(real)
+    return exe
+
+
 def is_admin() -> bool:
     """当前进程是否具有管理员/root 权限。"""
     if detect_platform() == "windows":
@@ -442,6 +458,7 @@ class WindowsBackend(ServiceBackend):
             return False, "未找到 sing-box 可执行文件"
         if not is_admin():
             return False, "注册服务需要管理员权限（右键→以管理员身份运行终端）"
+        exe = _resolve_binary(exe)
         r = _run(["schtasks", "/create", "/f", "/tn", self.SERVICE,
                   "/sc", "onstart", "/ru", "SYSTEM", "/rl", "highest",
                   "/tr", f'"{exe}" run -c "{config_path}"'])

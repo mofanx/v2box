@@ -276,6 +276,33 @@ def test_ensure_on_path_skips_posix(monkeypatch):
     assert calls == []
 
 
+def test_upgrade_refuses_scoop_shim(monkeypatch):
+    """scoop 的 sing-box.exe 是 shim 壳——直接覆盖会破坏 scoop 管理，拒绝并提示。"""
+    monkeypatch.setattr(updater.shutil, "which",
+                        lambda n: r"C:\Users\u\scoop\shims\sing-box.exe")
+    monkeypatch.setattr(backend, "detect_platform", lambda: "windows")
+    monkeypatch.setattr(backend, "is_admin", lambda: True)
+    logs = []
+    assert updater.upgrade(log=logs.append) is False
+    assert any("scoop" in m.lower() for m in logs)
+
+
+def test_resolve_scoop_shim(tmp_path):
+    """shim 路径解析到 apps\\sing-box\\current\\ 真实二进制；真身不存在则原样返回。"""
+    shim = tmp_path / "scoop" / "shims" / "sing-box.exe"
+    real = tmp_path / "scoop" / "apps" / "sing-box" / "current" / "sing-box.exe"
+    shim.parent.mkdir(parents=True)
+    shim.write_bytes(b"shim")
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b"real")
+    assert backend._resolve_binary(str(shim)) == str(real)
+    # 真身缺失 → 原样
+    real.unlink()
+    assert backend._resolve_binary(str(shim)) == str(shim)
+    # 非 scoop 路径 → 原样
+    assert backend._resolve_binary(r"C:\tools\sing-box.exe") == r"C:\tools\sing-box.exe"
+
+
 def test_install_flow_linux_sudo_install(tmp_path, monkeypatch):
     """Linux 端到端：下载 tar.gz → sudo install 到 /usr/local/bin。"""
     monkeypatch.setattr(updater.shutil, "which", lambda n: None)

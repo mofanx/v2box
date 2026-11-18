@@ -231,6 +231,10 @@ def upgrade(log=print) -> bool:
     if not exe:
         log("✗ 未找到 sing-box 二进制")
         return False
+    if "\\scoop\\shims\\" in exe.replace("/", "\\").lower():
+        log("检测到 scoop 安装的 sing-box——请用 `scoop update sing-box` 升级"
+            "（直接替换二进制会破坏 scoop 包管理）")
+        return False
     plat = backend.detect_platform()
     if plat == "windows" and not backend.is_admin():
         log("✗ Windows 下升级需要管理员权限，请以管理员身份重开终端")
