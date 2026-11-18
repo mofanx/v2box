@@ -35,6 +35,20 @@ from v2box.core.config import (
 )
 from v2box.core import service
 
+
+def _fix_windows_console_encoding():
+    """Windows 控制台默认 cp1252/GBK，rich 输出中文会 UnicodeEncodeError 崩溃——
+    强制 UTF-8，仍不可编码的字符降级为 '?' 而不是炸掉整个命令。"""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+_fix_windows_console_encoding()
 console = Console()
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
