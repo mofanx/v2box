@@ -239,6 +239,34 @@ def test_ensure_on_path_nonadmin_user_scope(monkeypatch):
     assert '"User"' in ps[-1]
 
 
+def test_get_sends_auth_when_token_env(monkeypatch):
+    """GH_TOKEN/GITHUB_TOKEN 存在时 _get 带 Authorization 头（CI 限流规避）。"""
+    captured = {}
+
+    class FakeResp:
+        def read(self):
+            return b"{}"
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["headers"] = dict(req.header_items())
+        return FakeResp()
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("GH_TOKEN", "tok123")
+    updater._get("https://api.github.com/x")
+    assert captured["headers"].get("Authorization") == "Bearer tok123"
+
+    captured.clear()
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    updater._get("https://api.github.com/x")
+    assert "Authorization" not in captured["headers"]
+
+
 def test_ensure_on_path_skips_posix(monkeypatch):
     calls = []
     monkeypatch.setattr(updater.subprocess, "run",

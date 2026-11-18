@@ -21,7 +21,13 @@ API = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
 
 
 def _get(url: str, timeout: int = 15) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "v2box-updater"})
+    """GitHub API/下载请求。GH_TOKEN/GITHUB_TOKEN 环境变量存在时带认证
+    （未认证共享 IP 只有 60 次/h，CI 或重度使用必撞限流）。"""
+    headers = {"User-Agent": "v2box-updater"}
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     return urllib.request.urlopen(req, timeout=timeout).read()
 
 

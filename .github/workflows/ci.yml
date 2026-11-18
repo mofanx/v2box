@@ -113,6 +113,8 @@ jobs:
         run: pip install -e . pytest
       - name: v2box install (real download + PATH)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           v2box install
           C:\ProgramData\sing-box\sing-box.exe version
