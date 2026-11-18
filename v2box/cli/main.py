@@ -467,6 +467,13 @@ def cmd_apply(output, dry_run, no_tun, lan, no_lan, listen_port, download_detour
 
     target = Path(output) if output else SINGBOX_CONFIG_PATH
 
+    from v2box.core.backend import detect_platform, is_admin
+    if detect_platform() == "windows" and not is_admin():
+        pd = os.environ.get("ProgramData", r"C:\ProgramData")
+        if str(target).startswith(pd):
+            console.print("[yellow]⚠[/yellow] 写入 ProgramData 需要管理员权限"
+                          "——请以管理员身份运行，或用 -o 指定用户目录")
+
     import subprocess
     backup = target.with_suffix(target.suffix + ".bak")
     if target.exists():
@@ -1527,68 +1534,22 @@ if __name__ == "__main__":
     cli()
 
 
-@cli.command("upgrade")
-@click.option("--yes", is_flag=True, help="跳过确认直接升级")
-def cmd_upgrade(yes):
-    """升级 sing-box 到最新正式版（下载 → 校验 → 安装 → 热加载）。
+@cli.command("install")
+@click.option("--with-service", is_flag=True,
+              help="安装后注册为系统服务（Linux systemd / Windows sc，需提权）")
+def cmd_install(with_service):
+    """安装 sing-box 二进制到系统（首次安装；已安装请用 v2box upgrade）。
 
     \b
-    上游修复（如接口翻转不自愈）通过升级 sing-box 二进制获取，
-    无需手动替换。只支持 Linux amd64。
+    目标路径：POSIX /usr/local/bin；Windows 管理员 ProgramData、
+    普通用户 LOCALAPPDATA\\Programs（需自行加入 PATH）。
+    示例:
+      v2box install
+      v2box install --with-service   # 装完顺手注册系统服务
     """
-    import json as _json
-    import shutil as _sh
-    import tempfile as _tf
-    import urllib.request as _ur
-    from pathlib import Path
-
-    if not _sh.which("sing-box"):
-        console.print("[red]✗[/red] 未安装 sing-box")
-        return
-    cur = subprocess.run(["sing-box", "version"], capture_output=True,
-                         text=True).stdout.split()[1] if True else "?"
-    console.print(f"当前版本: sing-box {cur}")
-
-    try:
-        with _ur.urlopen("https://api.github.com/repos/SagerNet/sing-box/releases/latest",
-                         timeout=15) as resp:
-            rel = _json.loads(resp.read())
-        tag = rel["tag_name"]
-        url = next(a["browser_download_url"] for a in rel["assets"]
-                   if "linux-amd64.tar.gz" in a["name"] and "pro" not in a["name"])
-    except Exception as e:
-        console.print(f"[red]✗[/red] 查询最新版本失败: {e}")
-        return
-    console.print(f"最新版本: {tag}")
-    if tag.lstrip("v") == cur.lstrip("v"):
-        console.print("[green]已是最新[/green]")
-        return
-    if not yes and not click.confirm("确认升级？"):
-        return
-
-    with _tf.TemporaryDirectory() as td:
-        tgz = Path(td) / "sb.tgz"
-        try:
-            _ur.urlretrieve(url, tgz)
-        except Exception as e:
-            console.print(f"[red]✗[/red] 下载失败: {e}")
-            return
-        subprocess.run(["tar", "xzf", str(tgz), "-C", td], check=True)
-        bin_path = next(Path(td).glob("sing-box-*/sing-box"))
-        # 新版本自检
-        r = subprocess.run([str(bin_path), "version"], capture_output=True, text=True)
-        if r.returncode != 0:
-            console.print("[red]✗[/red] 下载的二进制无法运行")
-            return
-        console.print(f"下载版本验证: {r.stdout.strip()}")
-        r = subprocess.run(["sudo", "install", "-m755", str(bin_path), "/usr/bin/sing-box"],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            console.print(f"[red]✗[/red] 安装失败: {r.stderr.strip()}")
-            return
-    console.print(f"[green]✓[/green] sing-box 已升级到 {tag}")
-    ok, msg = service.reload()
-    console.print(("  [green]✓[/green] 已热加载" if ok else f"  [yellow]○[/yellow] reload: {msg}"))
+    from v2box.core import updater
+    updater.install(log=lambda m: console.print(f"  {m}"),
+                    with_service=with_service)
 
 
 @cli.command("upgrade")
@@ -1596,11 +1557,42 @@ def cmd_upgrade():
     """升级 sing-box 二进制到最新 release（自动备份+失败回滚）。
 
     \b
+    支持 Linux/macOS/Windows；Windows 下需以管理员身份运行。
     示例:
       v2box upgrade
     """
     from v2box.core import updater
     updater.upgrade(log=lambda m: console.print(f"  {m}"))
+
+
+@cli.group("service")
+def cmd_service_group():
+    """管理 sing-box 系统服务注册。"""
+
+
+@cmd_service_group.command("install")
+@click.option("--config", "config_path", default=None,
+              help="配置文件路径（默认按平台探测）")
+def cmd_service_install(config_path):
+    """把 sing-box 注册为系统服务并设为开机自启。
+
+    \b
+    Linux 写 systemd unit（需 sudo）；Windows 走 sc create（需管理员终端）。
+    示例:
+      v2box service install
+      v2box service install --config /etc/sing-box/config.json
+    """
+    from v2box.core.backend import default_config_path
+    cfg = config_path or str(default_config_path())
+    ok, msg = service.backend().install_service(cfg)
+    console.print(f"[green]✓[/green] {msg}" if ok else f"[red]✗[/red] {msg}")
+
+
+@cmd_service_group.command("uninstall")
+def cmd_service_uninstall():
+    """卸载 sing-box 系统服务注册。"""
+    ok, msg = service.backend().uninstall_service()
+    console.print(f"[green]✓[/green] {msg}" if ok else f"[red]✗[/red] {msg}")
 
 
 @cli.command("rollback")

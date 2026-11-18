@@ -15,8 +15,22 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 
-def _run(cmd: list[str], check: bool = False) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+def _run(cmd: list[str], check: bool = False, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, check=check, **kw)
+
+
+def is_admin() -> bool:
+    """当前进程是否具有管理员/root 权限。"""
+    if detect_platform() == "windows":
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+    try:
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
 
 
 class ServiceBackend(ABC):
@@ -56,6 +70,14 @@ class ServiceBackend(ABC):
     def reload(self) -> tuple[bool, str]:
         """热加载配置（重建 inbound/TUN）。默认不支持。"""
         return False, f"{self.name} 后端不支持热加载"
+
+    def install_service(self, config_path: str) -> tuple[bool, str]:
+        """把 sing-box 注册为系统服务并设为开机自启。"""
+        return False, f"{self.name} 后端不支持注册服务，请手动安装 sing-box"
+
+    def uninstall_service(self) -> tuple[bool, str]:
+        """卸载 sing-box 系统服务注册。"""
+        return False, f"{self.name} 后端不支持卸载服务注册"
 
     def install_watchdog(self, v2box_bin: str, interval: int = 60) -> tuple[bool, str]:
         """安装看门狗常驻任务。interval 为探测周期（秒）。"""
@@ -149,6 +171,40 @@ class SystemdBackend(ServiceBackend):
         if result.returncode == 0:
             return True, "sing-box 已取消开机自启"
         return False, result.stderr.strip()
+
+    _SERVICE_UNIT = """[Unit]
+Description=sing-box service
+After=network.target nss-lookup.target
+
+[Service]
+ExecStart={exe} run -c {config}
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    def install_service(self, config_path: str) -> tuple[bool, str]:
+        exe = shutil.which("sing-box")
+        if not exe:
+            return False, "未找到 sing-box 可执行文件"
+        unit = self._SERVICE_UNIT.format(exe=exe, config=config_path)
+        path = Path("/etc/systemd/system") / f"{self.UNIT}.service"
+        r = _run(["sudo", "tee", str(path)], input=unit)
+        if r.returncode != 0:
+            return False, f"写入 unit 失败: {r.stderr.strip()}"
+        _run(["sudo", "systemctl", "daemon-reload"])
+        r = _run(["sudo", "systemctl", "enable", "--now", self.UNIT])
+        return (r.returncode == 0), r.stderr.strip() or f"服务已注册并启动 ({path})"
+
+    def uninstall_service(self) -> tuple[bool, str]:
+        _run(["sudo", "systemctl", "disable", "--now", self.UNIT])
+        r = _run(["sudo", "rm", "-f",
+                  str(Path("/etc/systemd/system") / f"{self.UNIT}.service")])
+        _run(["sudo", "systemctl", "daemon-reload"])
+        return (r.returncode == 0), r.stderr.strip() or "sing-box 服务已卸载"
 
     # ── 看门狗安装 ──────────────────────────────────────────
 
@@ -366,6 +422,28 @@ class WindowsBackend(ServiceBackend):
         r = _run(["sc", "config", self.SERVICE, "start=", "demand"])
         return (r.returncode == 0), r.stderr.strip() or r.stdout.strip()
 
+    def install_service(self, config_path: str) -> tuple[bool, str]:
+        exe = shutil.which("sing-box")
+        if not exe:
+            return False, "未找到 sing-box 可执行文件"
+        if not is_admin():
+            return False, "注册服务需要管理员权限（右键→以管理员身份运行终端）"
+        bin_path = f'"{exe}" run -c "{config_path}"'
+        r = _run(["sc", "create", self.SERVICE, f"binPath={bin_path}",
+                  "start=", "auto"])
+        if r.returncode != 0:
+            return False, r.stderr.strip() or r.stdout.strip()
+        _run(["sc", "description", self.SERVICE,
+              "sing-box proxy service (managed by v2box)"])
+        return True, f"sing-box 已注册为 Windows 服务（{self.SERVICE}）"
+
+    def uninstall_service(self) -> tuple[bool, str]:
+        if not is_admin():
+            return False, "卸载服务需要管理员权限（右键→以管理员身份运行终端）"
+        self.stop()
+        r = _run(["sc", "delete", self.SERVICE])
+        return (r.returncode == 0), r.stderr.strip() or r.stdout.strip() or "sing-box 服务已卸载"
+
     def install_watchdog(self, v2box_bin: str, interval: int = 60) -> tuple[bool, str]:
         # schtasks 最小粒度为 1 分钟
         minutes = max(1, interval // 60)
@@ -442,8 +520,12 @@ def default_config_path() -> Path:
     if p == "windows":
         progdata = Path(os.environ.get("ProgramData", r"C:\ProgramData"))
         p_progdata = progdata / "sing-box" / "config.json"
-        if p_progdata.exists():
+        if p_progdata.exists() or is_admin():
             return p_progdata
         exe = shutil.which("sing-box")
-        return Path(exe).parent / "config.json" if exe else p_progdata
+        if exe:
+            p_exe = Path(exe).parent / "config.json"
+            if os.access(p_exe.parent, os.W_OK):
+                return p_exe
+        return Path.home() / ".config" / "sing-box" / "config.json"
     return Path("/etc/sing-box/config.json")
